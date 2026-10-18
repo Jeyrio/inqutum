@@ -75,6 +75,38 @@ describe('calculateInvoiceStats', () => {
 
     assert.deepEqual(stats.revenue_by_asset, {});
   });
+
+  it('safely treats prototype-sensitive asset codes as ordinary keys', () => {
+    const stats = calculateInvoiceStats([
+      invoice(sellerA, 12, '__proto__', 'PAID'),
+      invoice(sellerA, 8, 'constructor', 'PAID'),
+    ], sellerA);
+
+    assert.equal(Object.getPrototypeOf(stats.revenue_by_asset), Object.prototype);
+    assert.equal(Object.hasOwn(stats.revenue_by_asset, '__proto__'), true);
+    assert.equal(stats.revenue_by_asset['__proto__'], 12);
+    assert.equal(stats.revenue_by_asset.constructor, 8);
+  });
+
+  it('rejects invalid seller keys and malformed invoice values with a stable code', () => {
+    for (const [invoices, seller] of [
+      [[], '  '],
+      [[invoice(sellerA, Number.NaN, 'XLM')], sellerA],
+      [[{ ...invoice(sellerA, 10, 'XLM'), status: 'UNKNOWN' }], sellerA],
+    ] as any[]) {
+      assert.throws(
+        () => calculateInvoiceStats(invoices, seller),
+        (error: any) => error.code === 'INVALID_INVOICE_STATS_INPUT'
+      );
+    }
+  });
+
+  it('rejects a non-array dependency result rather than returning misleading totals', () => {
+    assert.throws(
+      () => calculateInvoiceStats(null as any, sellerA),
+      (error: any) => error.code === 'INVALID_INVOICE_STATS_INPUT'
+    );
+  });
 });
 
 describe('MemoryStorage parity with Postgres invoice columns', () => {

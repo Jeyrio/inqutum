@@ -1,5 +1,11 @@
 import { Response } from 'express';
 import type { VerificationCode } from '../services/payment-verification';
+import {
+  ErrorCategory,
+  DOMAIN_ERROR_TAXONOMY,
+  classifyError,
+} from '../errors/error-taxonomy';
+import { redactErrorMessage } from '../security/redaction';
 
 // Shared response envelope used by both the MVP and the Postgres server.
 // Both servers send the same success/failure shape so clients stay
@@ -11,6 +17,9 @@ export interface ApiPagination {
   limit: number;
   offset: number;
   total: number;
+  /** Keyset cursor for the next page; null when this is the last page. */
+  nextCursor?: string | null;
+  hasMore?: boolean;
 }
 
 export interface ApiSuccess<T> {
@@ -20,6 +29,9 @@ export interface ApiSuccess<T> {
   code?: string;
   warning?: string;
   pagination?: ApiPagination;
+  correlationId?: string;
+  /** Schema version of the data payload, when applicable. */
+  apiVersion?: string;
 }
 
 /**
@@ -58,20 +70,19 @@ export type ApiErrorCode =
 export interface ApiFailure {
   success: false;
   error: string;
-  code?: VerificationCode | ApiErrorCode;
-  /** Extra structured context for the code, e.g. `{ from, to }` for INVALID_TRANSITION. */
-  details?: Record<string, unknown>;
-}
-
-export interface CancelInvoiceInput {
-  sellerPublicKey?: string;
+  code?: VerificationCode | string;
+  category?: ErrorCategory;
+  retryable?: boolean;
+  recoveryAction?: string;
+  correlationId?: string;
+  timestamp?: string;
 }
 
 export type ApiResponse<T> = ApiSuccess<T> | ApiFailure;
 
 export function apiSuccess<T>(
   data: T,
-  extra?: { message?: string; code?: string; warning?: string; pagination?: ApiPagination }
+  extra?: { message?: string; pagination?: ApiPagination; correlationId?: string; apiVersion?: string }
 ): ApiSuccess<T> {
   const body: ApiSuccess<T> = { success: true, data };
 
@@ -87,43 +98,112 @@ export function apiSuccess<T>(
   if (extra?.pagination) {
     body.pagination = extra.pagination;
   }
+  if (extra?.correlationId) {
+    body.correlationId = extra.correlationId;
+  }
+  if (extra?.apiVersion) {
+    body.apiVersion = extra.apiVersion;
+  }
 
   return body;
 }
 
-export function apiFailure(error: string): ApiFailure {
-  return { success: false, error };
+export function apiFailure(
+  error: string,
+  extra?: {
+    code?: string;
+    category?: ErrorCategory;
+    retryable?: boolean;
+    recoveryAction?: string;
+    correlationId?: string;
+  }
+): ApiFailure {
+  const code = extra?.code;
+  const taxonomy = code ? DOMAIN_ERROR_TAXONOMY[code] : undefined;
+
+  return {
+    success: false,
+    error: redactErrorMessage(error),
+    ...(code ? { code: code as VerificationCode } : {}),
+    category: extra?.category || taxonomy?.category,
+    retryable: extra?.retryable !== undefined ? extra.retryable : taxonomy?.retryable,
+    recoveryAction: extra?.recoveryAction || taxonomy?.recoveryAction,
+    ...(extra?.correlationId ? { correlationId: extra.correlationId } : {}),
+    timestamp: new Date().toISOString(),
+  };
 }
 
 export function sendSuccess<T>(
   res: Response,
   status: number,
   data: T,
-  extra?: { message?: string; code?: string; warning?: string; pagination?: ApiPagination }
+  extra?: { message?: string; pagination?: ApiPagination; correlationId?: string; apiVersion?: string }
 ): void {
-  res.status(status).json(apiSuccess(data, extra));
+  const corrId = extra?.correlationId || (res.req as any)?.correlationId;
+  res.status(status).json(apiSuccess(data, { ...extra, correlationId: corrId }));
 }
 
 export function sendFailure(
   res: Response,
   status: number,
-  error: string,
-  code?: ApiFailure['code'],
-  details?: ApiFailure['details']
+  error: string | any,
+  extra?: {
+    code?: string;
+    category?: ErrorCategory;
+    retryable?: boolean;
+    recoveryAction?: string;
+    correlationId?: string;
+  }
 ): void {
-  const body = apiFailure(error);
-  if (code) body.code = code;
-  if (details) body.details = details;
-  res.status(status).json(body);
+  const corrId = extra?.correlationId || (res.req as any)?.correlationId;
+
+  if (typeof error === 'object' && error !== null) {
+    const classified = classifyError(error);
+    const message =
+      classified.customMessage ||
+      (typeof error.message === 'string' && error.message.length > 0
+        ? error.message
+        : classified.userSafeMessage);
+
+    res.status(status || classified.httpStatus).json(
+      apiFailure(message, {
+        code: classified.code,
+        category: classified.category,
+        retryable: classified.retryable,
+        recoveryAction: classified.recoveryAction,
+        correlationId: corrId,
+      })
+    );
+    return;
+  }
+
+  res.status(status).json(apiFailure(error, { ...extra, correlationId: corrId }));
 }
 
 export function sendVerificationFailure(
   res: Response,
   status: number,
   code: VerificationCode,
-  error: string
+  error: string,
+  correlationId?: string
 ): void {
-  res.status(status).json({ success: false, code, error });
+  const corrId = correlationId || (res.req as any)?.correlationId;
+  const taxonomy = DOMAIN_ERROR_TAXONOMY[code];
+
+  res.status(status).json({
+    success: false,
+    code,
+    error: redactErrorMessage(error),
+    ...(taxonomy
+      ? {
+          category: taxonomy.category,
+          retryable: taxonomy.retryable,
+          recoveryAction: taxonomy.recoveryAction,
+        }
+      : {}),
+    ...(corrId ? { correlationId: corrId } : {}),
+    timestamp: new Date().toISOString(),
+  });
 }
 
 /**
@@ -151,5 +231,5 @@ export default {
   apiFailure,
   sendSuccess,
   sendFailure,
-  verificationFailureBody,
+  sendVerificationFailure,
 };

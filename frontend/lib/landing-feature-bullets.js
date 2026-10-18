@@ -1,4 +1,4 @@
-const LANDING_BULLETS = Object.freeze([
+const LANDING_BULLETS = [
   {
     n: '01',
     title: 'Create',
@@ -14,10 +14,13 @@ const LANDING_BULLETS = Object.freeze([
     title: 'Keep proof',
     body: 'Download your quittance as PDF, or email it when a client address is set.',
   },
-]);
+];
 
 function renderLandingBullets() {
   return LANDING_BULLETS.map((bullet) => ({ ...bullet }));
 }
 
-module.exports = { LANDING_BULLETS, renderLandingBullets };
+module.exports = {
+  LANDING_BULLETS,
+  renderLandingBullets,
+};

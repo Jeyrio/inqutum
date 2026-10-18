@@ -4,35 +4,19 @@ import type {
   SettlementContext,
 } from '../domain/invoice-settlement';
 import type { InvoiceStats } from './invoice-stats';
-import type {
-  ReconciliationInvoice,
-  ReconciliationSettlement,
-} from '../domain/reconciliation';
+import type { AuditEvent, AuditFilter, AuditQueryResult } from '../audit/audit-service';
 
 // Shared shape and shared storage contract. Both MemoryInvoiceStorage and
-// PostgresInvoiceStorage implement these 8 methods with the same semantics,
+// PostgresInvoiceStorage implement these methods with the same semantics,
 // and every invoice they return is the StoredInvoice type below. Behaviour
 // parity (expiry guard on normal markAsPaid, cancel-aware late settlement,
 // single-transition PENDING->CANCELLED, lazy
 // markExpiredInvoices on all reads, strict seller_public_key scoping on list
-// and stats) is pinned by the shared test suite in invoice-handlers.test.ts.
-// The status set and its legal transitions live in shared/invoice-lifecycle.ts;
-// both stores and the UI ask that module rather than re-deriving the rules.
-import type { InvoiceStatus } from '../../../shared/invoice-lifecycle';
-export type { InvoiceStatus };
+// and stats, and audit trail capture) is pinned by the shared test suite in invoice-handlers.test.ts.
+import type { InvoiceCursor } from './invoice-cursor';
 
-/**
- * One row of an invoice's audit trail: a state change or payment event that
- * affected the user or their funds. Backed by `payment_events` in Postgres and
- * an in-process list in the memory store.
- */
-export interface AuditEvent {
-  id: string;
-  invoiceId: string;
-  eventType: string;
-  eventData: Record<string, unknown> | null;
-  createdAt: Date;
-}
+export type InvoiceStatus = 'PENDING' | 'PAID' | 'EXPIRED' | 'CANCELLED';
+export const INVOICE_STATUSES: readonly InvoiceStatus[] = ['PENDING', 'PAID', 'EXPIRED', 'CANCELLED'];
 
 // Invoice shape shared by both storage backends.
 export interface StoredInvoice {
@@ -66,6 +50,10 @@ export interface StoredInvoice {
   latePaymentWarningCode?: LatePaymentWarningCode;
   expiresAt: Date;
   metadata?: any;
+  /** Schema version stamp. Absent on records created before versioning. */
+  _schemaVersion?: string;
+  /** Optimistic concurrency token. Incremented on every state change. */
+  version?: number;
 }
 
 export interface PayerInfo {
@@ -73,9 +61,10 @@ export interface PayerInfo {
   payerEmail?: string;
 }
 
-export interface MarkAsPaidOptions {
-  /** Horizon ledger close time for the matching transaction. */
-  settledAt?: Date;
+export interface OverduePendingInvoices {
+  total: number;
+  /** Oldest expiry first. */
+  invoices: Array<Pick<StoredInvoice, 'id' | 'sellerPublicKey' | 'expiresAt'>>;
 }
 
 /**
@@ -91,69 +80,37 @@ export interface InvoiceStorage {
   createInvoice(input: CreateInvoiceInput): Promise<StoredInvoice>;
   getInvoiceById(id: string): Promise<StoredInvoice | null>;
   /**
-   * Read-only lookup by import key (issue #53).
-   *
-   * Unlike getInvoiceById/getInvoiceByMemo this MUST NOT apply the lazy expiry
-   * transition: import dry runs resolve every row through this method and are
-   * required to perform no persistent writes, so a preview can never mutate the
-   * invoices it is previewing. Implementations must not call
-   * markExpiredInvoices here.
+   * Newest first by (createdAt, id). Pass `after` for keyset pagination;
+   * `offset` is kept for older clients and is unstable under inserts.
    */
-  getInvoiceByExternalId(externalId: string): Promise<StoredInvoice | null>;
-  /**
-   * Patch only the descriptive fields of an existing invoice (issue #53).
-   *
-   * Financial and lifecycle columns are deliberately not patchable: amount,
-   * assetCode, assetIssuer, sellerPublicKey, status and the payment fields are
-   * either settled facts or security boundaries, so a re-import can never
-   * rewrite them. Returns null when the invoice does not exist.
-   */
-  updateInvoiceMutableFields(
-    id: string,
-    patch: {
-      description?: string;
-      customerName?: string;
-      customerEmail?: string;
-      sellerName?: string;
-      sellerEmail?: string;
-    }
-  ): Promise<StoredInvoice | null>;
   getInvoicesBySeller(
     sellerPublicKey: string,
     status?: string,
     limit?: number,
-    offset?: number
+    offset?: number,
+    after?: InvoiceCursor
   ): Promise<StoredInvoice[]>;
-  cancelInvoice(id: string, sellerPublicKey?: string): Promise<StoredInvoice>;
+  cancelInvoice(id: string, expectedVersion?: number): Promise<StoredInvoice>;
   markAsPaid(
     id: string,
     txHash: string,
     payerPublicKey: string,
     payerInfo?: PayerInfo,
-    options?: MarkAsPaidOptions
+    expectedVersion?: number
   ): Promise<StoredInvoice>;
   getInvoiceStats(sellerPublicKey: string): Promise<InvoiceStats[]>;
   /** Explicit maintenance hook; reads also apply this transition lazily. */
   markExpiredInvoices(now?: Date): Promise<number>;
-  /** Returns total count of invoices currently stored. */
-  countInvoices?(): Promise<number>;
-  /** Purges expired or historical settled demo invoices older than maxAgeHours. */
-  purgeStaleInvoices?(options: { maxAgeHours: number; statuses?: InvoiceStatus[] }): Promise<number>;
-  /** Audit events for one invoice, oldest first. */
-  getAuditTrail(invoiceId: string): Promise<AuditEvent[]>;
+  /**
+   * Read-only drift check for the ops report: PENDING invoices whose expiry is
+   * at or before `cutoff`. Must not apply the lazy expiry transition.
+   */
+  findOverduePendingInvoices(cutoff: Date, limit: number): Promise<OverduePendingInvoices>;
+  /** Retrieve all stored invoices for operations, diagnostics, and policy simulations */
+  getAllInvoices?(filter?: { status?: string }): Promise<StoredInvoice[]>;
 
-  // --- Read-only access for reconciliation (docs/RECONCILIATION.md) ---
-  //
-  // Every other read here applies the expiry sweep first, which *writes*. These
-  // never write: a reconciliation that changed the data it is checking could
-  // not report stale records, and could not be run against production safely.
-
-  /** Every invoice exactly as stored, with amounts kept exact. */
-  listInvoicesForReconciliation(): Promise<ReconciliationInvoice[]>;
-  /** Every audit event, oldest first. */
-  listAuditEvents(): Promise<AuditEvent[]>;
-  /** Same figures as getInvoiceStats, without the expiry sweep. */
-  readInvoiceStats(sellerPublicKey: string): Promise<InvoiceStats[]>;
-  /** Settlement references held apart from the invoice rows, or null if this backend keeps none. */
-  listSettlements(): Promise<ReconciliationSettlement[] | null>;
+  // Audit trail methods
+  recordAuditEvent?(event: Omit<AuditEvent, 'id' | 'timestamp'> & { timestamp?: string }): Promise<AuditEvent>;
+  getAuditEvents?(filter?: AuditFilter): Promise<AuditQueryResult>;
+  getAuditEventsByInvoice?(invoiceId: string): Promise<AuditEvent[]>;
 }

@@ -78,8 +78,8 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* The skip link in the root layout targets this. */}
-      <main id={MAIN_CONTENT_ID} tabIndex={-1}>
+      <main id="main-content">
+
       {/* Hero — one composition */}
       <section className="relative min-h-[100svh] flex flex-col justify-center hero-atmosphere overflow-hidden" aria-labelledby="hero-heading">
         <div className="hero-grain" aria-hidden />
@@ -89,14 +89,7 @@ export default function HomePage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
           >
-            {/*
-              This was a <p> styled to look like a title, which left the landing
-              page with no h1 at all and its heading outline starting at h2.
-            */}
-            <h1
-              id="hero-heading"
-              className="font-display text-[clamp(3.5rem,12vw,8.5rem)] leading-[0.9] tracking-tight text-[var(--ink)] max-w-4xl"
-            >
+            <h1 className="font-display text-[clamp(3.5rem,12vw,8.5rem)] leading-[0.9] tracking-tight text-[var(--ink)] max-w-4xl">
               Quittance
             </h1>
           </motion.div>
@@ -347,6 +340,8 @@ export default function HomePage() {
           </div>
         </div>
       </section>
+      </main>
+
       </main>
 
       <footer className="border-t border-[var(--line)] bg-white">

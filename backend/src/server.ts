@@ -7,14 +7,39 @@ import { validateStellarConfig, SELLER_PUBLIC_KEY } from './config/stellar';
 import paymentMonitorService from './services/payment-monitor.service';
 import { assertSafeEnvironment, configuredFrontendOrigins, corsOptions } from './config/runtime';
 import postgresInvoiceStorage from './storage/postgres-invoice-storage';
-import { RetentionService, startRetentionScheduler } from './retention/retention-service';
-import { PostgresRetentionStore } from './retention/postgres-retention-store';
+import { securityHeaders } from './security/content-safety';
+import { correlationMiddleware } from './observability/telemetry';
+import invoiceService from './services/invoice.service';
+import { JobQueue, JobWorker } from './jobs/worker';
+import { PostgresJobStore } from './jobs/postgres-job-store';
+import { registerJobHandlers, startExpiryScheduler } from './jobs/runtime';
+import { buildUserSafeErrorResponse, classifyError } from './errors/error-taxonomy';
+import { validateEnvironment } from './config/env-validator';
 
 dotenv.config();
 assertSafeEnvironment();
 
+const envCheck = validateEnvironment(process.env, { strict: process.env.NODE_ENV === 'production' });
+if (envCheck.issues.length > 0 && process.env.NODE_ENV !== 'test') {
+  console.warn(`⚠️ Configuration warnings detected:\n  - ${envCheck.issues.join('\n  - ')}`);
+}
+
 const app: Application = express();
-const PORT = process.env.PORT || 3001;
+const PORT = envCheck.validated.PORT || process.env.PORT || 3001;
+
+// Background jobs: the expiry sweep runs through the worker framework. Set
+// JOBS_EMBEDDED_WORKER=false to run workers only via `npm run worker`.
+const jobStore = new PostgresJobStore(pool);
+const jobWorker = registerJobHandlers(new JobWorker({ store: jobStore }), {
+  expirePendingInvoices: () => invoiceService.markExpiredInvoices(),
+});
+let stopExpiryScheduler: (() => void) | null = null;
+
+// Correlation ID & Latency Tracking
+app.use(correlationMiddleware());
+
+// Restrictive security headers on every API response
+app.use(securityHeaders());
 
 app.use(cors(corsOptions()));
 
@@ -22,7 +47,7 @@ app.use(express.json({ limit: '16kb' }));
 app.use(express.urlencoded({ extended: true, limit: '16kb' }));
 
 app.use((req: Request, res: Response, next: NextFunction) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  console.log(`${new Date().toISOString()} [${req.correlationId}] - ${req.method} ${req.path}`);
   next();
 });
 
@@ -38,6 +63,7 @@ app.get('/', (req: Request, res: Response) => {
   });
 });
 
+// User-Safe Error handling middleware with taxonomy and correlation tracking
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   if ((err as any).type === 'entity.too.large' || (err as any).status === 413 || (err as any).statusCode === 413) {
     return res.status(413).json({
@@ -47,18 +73,19 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     });
   }
   console.error('Unhandled error:', err);
-  const code = (err as Error & { code?: string }).code;
-  res.status(code === 'CORS_ORIGIN_DENIED' ? 403 : 500).json({
-    success: false,
-    code,
-    error: err.message || 'Internal server error',
-  });
+  const classified = classifyError(err);
+  const status = (err as any).code === 'CORS_ORIGIN_DENIED' ? 403 : classified.httpStatus || 500;
+  const payload = buildUserSafeErrorResponse(err, req.correlationId);
+
+  res.status(status).json(payload);
 });
 
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
+    code: 'NOT_FOUND',
     error: 'Endpoint not found',
+    correlationId: req.correlationId,
   });
 });
 
@@ -93,6 +120,11 @@ async function initialize() {
     } else {
       console.log('Wallet-scoped mode: no SELLER_PUBLIC_KEY, payment monitor disabled');
     }
+
+    if (process.env.JOBS_EMBEDDED_WORKER !== 'false') {
+      jobWorker.start();
+      stopExpiryScheduler = startExpiryScheduler(new JobQueue(jobStore));
+    }
   } catch (error) {
     console.error('Failed to initialize:', error);
     process.exit(1);
@@ -123,6 +155,8 @@ process.on('SIGTERM', async () => {
   console.log('Shutting down...');
   stopRetentionScheduler?.();
   paymentMonitorService.stop();
+  jobWorker.stop();
+  stopExpiryScheduler?.();
   await pool.end();
   process.exit(0);
 });
@@ -131,6 +165,8 @@ process.on('SIGINT', async () => {
   console.log('Shutting down...');
   stopRetentionScheduler?.();
   paymentMonitorService.stop();
+  jobWorker.stop();
+  stopExpiryScheduler?.();
   await pool.end();
   process.exit(0);
 });

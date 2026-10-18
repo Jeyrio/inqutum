@@ -260,11 +260,21 @@ Open the app at `http://localhost:3000`.
 - `FRONTEND_URL` in `backend/.env` must match the frontend origin for CORS; the provided MVP env uses `http://localhost:3000`.
 - `NEXT_PUBLIC_API_URL` in `frontend/.env.local` must include `/api`; the provided MVP env uses `http://localhost:3001/api`.
 
-### Env reference
+### Contributor Diagnostics & Health Checks
 
-- Backend MVP template: `backend/env.mvp.example` → copy to `backend/.env`
-- Frontend MVP template: `frontend/env.mvp.local` → copy to `frontend/.env.local`
-- Full frontend template: `frontend/env.example.txt`
+Verify your development environment, required tools, configuration, and dependencies with one command:
+
+```bash
+cd backend
+npm run diagnostics
+```
+
+Or from repository root:
+```bash
+npx tsx scripts/diagnostics.ts
+```
+
+This read-only check verifies Node.js engine compatibility, project structure, typed environment configuration, and network reachability. Full details: [`docs/diagnostics.md`](docs/diagnostics.md).
 
 ---
 
@@ -317,7 +327,7 @@ npm run dev          # src/server.ts (Postgres) instead of dev:mvp (in-memory)
 ```
 
 The dashboard sends the connected wallet on every call:
-`GET /api/invoices?sellerPublicKey=G...` and `GET /api/invoices/stats?sellerPublicKey=G...`
+`GET /api/invoices?sellerPublicKey=G...` (cursor-paginated, see [`docs/PAGINATION.md`](./docs/PAGINATION.md)) and `GET /api/invoices/stats?sellerPublicKey=G...`
 both return `400` when the seller key is missing.
 
 ### 4) Tests
@@ -434,14 +444,10 @@ A Stellar asset is the pair `(code, issuer)`, never the code alone — anyone ca
 issue a credit asset coded `USDC`, or even `XLM`. How invoices name assets and
 how settlement compares them is documented in
 [`docs/ASSETS.md`](./docs/ASSETS.md) and [`docs/VERIFY.md`](./docs/VERIFY.md).
-The current SEP-0007 field map, wallet test vectors, memo byte limit, and
-Testnet recommendation are in [`docs/SEP_0007_QR.md`](./docs/SEP_0007_QR.md).
-Freighter mobile feasibility, device/browser compatibility matrix, non-custodial
-fallback UX without Google login, and demonstration instructions are in
-[`docs/MOBILE_PAY_FEASIBILITY.md`](./docs/MOBILE_PAY_FEASIBILITY.md) and
-[`docs/MOBILE_DEMO_SCRIPT.md`](./docs/MOBILE_DEMO_SCRIPT.md).
-Data retention windows and what is protected: [`docs/RETENTION.md`](./docs/RETENTION.md).
-Disaster-recovery validation (`npm run validate:dr`): [`docs/RECOVERY.md`](./docs/RECOVERY.md). HTTP API reference and error codes: [`docs/API.md`](./docs/API.md).
+Background jobs (retries, dead-letter queue, running workers): [`docs/JOBS.md`](./docs/JOBS.md).
+Stuck jobs and payments: [`docs/PARTIAL-FAILURES.md`](./docs/PARTIAL-FAILURES.md). Business rules: [`docs/POLICY.md`](./docs/POLICY.md). Activity timeline: [`docs/ACTIVITY-TIMELINE.md`](./docs/ACTIVITY-TIMELINE.md). Sandbox mode: [`docs/SANDBOX.md`](./docs/SANDBOX.md).
+Accessibility conventions and checks: [`docs/ACCESSIBILITY.md`](./docs/ACCESSIBILITY.md).
+Notifications: [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md). Data exports: [`docs/EXPORTS.md`](./docs/EXPORTS.md). Untrusted content and URL handling: [`docs/CONTENT_SAFETY.md`](./docs/CONTENT_SAFETY.md).
 
 ## Tests & CI
 

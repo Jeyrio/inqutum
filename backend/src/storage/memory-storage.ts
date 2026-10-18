@@ -2,28 +2,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { calculateInvoiceStats } from './invoice-stats';
 import type { InvoiceStats } from './invoice-stats';
 import { isPendingInvoiceExpired } from '../domain/invoice-expiry';
-import { settlementFieldsForInvoice } from '../domain/invoice-settlement';
-import {
-  InvalidTransitionError,
-  assertTransition,
-  canTransition,
-} from '../../../shared/invoice-lifecycle';
-import type { InvoiceEvent } from '../../../shared/invoice-lifecycle';
-import {
-  MemoCollisionError,
-  PaymentClaimError,
-  PaymentClaimIndex,
-} from '../domain/payment-attribution';
-import type { PaymentClaim } from '../domain/payment-attribution';
-import type { AuditEvent, InvoiceStatus, MarkAsPaidOptions, StoredInvoice } from './invoice-storage';
-
-export interface MemoryPaymentEvent {
-  id: string;
-  invoiceId: string;
-  eventType: string;
-  eventData: any;
-  createdAt: Date;
-}
+import type { StoredInvoice } from './invoice-storage';
+import { checkVersion } from '../concurrency/optimistic-lock';
 
 type Invoice = StoredInvoice;
 
@@ -40,8 +20,16 @@ class MemoryStorage {
   private lifecycleEvents: MemoryPaymentEvent[] = [];
 
   createInvoice(data: Partial<Invoice>): Invoice {
+    const id = data.id || uuidv4();
+    if (this.invoices.has(id)) {
+      throw new Error(`Duplicate invoice ID collision: ${id}`);
+    }
+    if (data.memo && this.invoicesByMemo.has(data.memo)) {
+      throw new Error(`Duplicate invoice memo collision: ${data.memo}`);
+    }
+
     const invoice: Invoice = {
-      id: data.id || uuidv4(),
+      id,
       sellerPublicKey: data.sellerPublicKey!,
       sellerName: data.sellerName,
       sellerEmail: data.sellerEmail,
@@ -59,6 +47,7 @@ class MemoryStorage {
       createdAt: new Date(),
       expiresAt: data.expiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       metadata: data.metadata,
+      version: 1,
     };
 
     // The memo index is keyed by memo, so a second invoice carrying the same
@@ -77,7 +66,9 @@ class MemoryStorage {
     }
     this.recordLifecycleEvent(invoice.id, 'INVOICE_CREATED', { to: 'PENDING' });
 
-    console.log('✅ Invoice created in memory:', invoice.id);
+    if (process.env.NODE_ENV !== 'test') {
+      console.log('✅ Invoice created in memory:', invoice.id);
+    }
     return invoice;
   }
 
@@ -145,17 +136,13 @@ class MemoryStorage {
   }
 
   // Update invoice
-  updateInvoice(id: string, updates: Partial<Invoice>): Invoice | undefined {
+  updateInvoice(id: string, updates: Partial<Invoice>, expectedVersion?: number): Invoice | undefined {
     const invoice = this.invoices.get(id);
     if (!invoice) return undefined;
 
-    // Last line of defence: whatever the caller intended, a status write that
-    // the lifecycle does not allow never reaches the record.
-    if (updates.status && updates.status !== invoice.status && !canTransition(invoice.status, updates.status)) {
-      throw new InvalidTransitionError(invoice.status, updates.status);
-    }
+    checkVersion(expectedVersion, invoice.version ?? 1);
 
-    const updated = { ...invoice, ...updates };
+    const updated = { ...invoice, ...updates, version: (invoice.version ?? 1) + 1 };
     this.invoices.set(id, updated);
 
     console.log('✅ Invoice updated:', id);
@@ -188,7 +175,7 @@ class MemoryStorage {
     txHash: string,
     payerPublicKey: string,
     payerInfo?: { payerName?: string; payerEmail?: string },
-    options: MarkAsPaidOptions = {}
+    expectedVersion?: number
   ): Invoice | undefined {
     this.markExpiredInvoices();
     const now = new Date();
@@ -203,47 +190,20 @@ class MemoryStorage {
       throw new InvalidTransitionError('EXPIRED', to, event);
     }
 
-    const settlement = settlementFieldsForInvoice(
-      invoice,
-      options.settledAt ?? (invoice.status === 'PENDING' ? now : undefined)
-    );
-
-    // One transaction settles one invoice. The claim below reads and records in
-    // the same synchronous step, so a second caller holding the same hash gets a
-    // decision here rather than a second PAID transition. A replay against this
-    // same invoice falls back to the "already processed" contract above.
-    const decision = this.paymentClaims.claim(txHash, id, now);
-    if (decision.kind === 'conflict') {
-      throw new PaymentClaimError(txHash, id, decision.claim.invoiceId);
+    for (const existing of this.invoices.values()) {
+      if (existing.id !== id && existing.paymentTxHash && existing.paymentTxHash === txHash) {
+        throw new Error(`Duplicate payment_tx_hash collision: ${txHash}`);
+      }
     }
-    if (decision.kind === 'replay') return undefined;
 
-    const updated = this.updateInvoice(id, {
-      status: to,
+    return this.updateInvoice(id, {
+      status: 'PAID',
       paymentTxHash: txHash,
       payerPublicKey,
       payerName: payerInfo?.payerName,
       payerEmail: payerInfo?.payerEmail,
-      paidAt: now,
-      cancelledAt: invoice.cancelledAt,
-      settledAt: settlement.settledAt,
-      settlementContext: settlement.settlementContext,
-      priorStatus: settlement.priorStatus,
-      latePaymentWarningCode: settlement.latePaymentWarningCode,
-    });
-
-    if (updated) {
-      this.logPaymentEvent(id, 'PAYMENT_CONFIRMED', {
-        txHash,
-        payerPublicKey,
-        settledAt: settlement.settledAt.toISOString(),
-        settlementContext: settlement.settlementContext,
-        priorStatus: settlement.priorStatus,
-        latePaymentWarningCode: settlement.latePaymentWarningCode,
-      });
-    }
-
-    return updated;
+      paidAt: new Date(),
+    }, expectedVersion);
   }
 
   // Get all invoices
@@ -265,6 +225,13 @@ class MemoryStorage {
   }
 
   // Mark expired invoices
+  /** Overdue PENDING invoices, without transitioning them. */
+  findOverduePending(cutoff: Date): Invoice[] {
+    return Array.from(this.invoices.values())
+      .filter((invoice) => isPendingInvoiceExpired(invoice, cutoff))
+      .sort((a, b) => a.expiresAt.getTime() - b.expiresAt.getTime());
+  }
+
   markExpiredInvoices(now: Date = new Date()): number {
     let count = 0;
 

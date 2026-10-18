@@ -8,7 +8,10 @@ import cors from 'cors';
 import path from 'path';
 import dotenv from 'dotenv';
 import { createInvoiceRouter } from './routes/invoice.routes';
-import { createImportRouter } from './routes/import.routes';
+import { createAuditRouter } from './routes/audit.routes';
+import { createExportRouter } from './routes/export.routes';
+import { createNotificationRouter } from './routes/notification.routes';
+import { createObservabilityRouter } from './routes/observability.routes';
 import memoryInvoiceStorage from './storage/memory-invoice-storage';
 import invoiceMemoryService from './services/invoice-memory.service';
 import paymentMonitorService from './services/payment-monitor.service';
@@ -17,16 +20,12 @@ import { FilePaymentMonitorCheckpointStore } from './services/payment-monitor-ch
 import { SELLER_PUBLIC_KEY } from './config/stellar';
 import { assertSafeEnvironment, configuredFrontendOrigins, corsOptions } from './config/runtime';
 import { healthHandler, readinessHandler } from './health';
-import { createAuthRouter } from './routes/auth.routes';
-import { createReconciliationRouter } from './routes/reconciliation.routes';
-import { createEmailRouter } from './routes/email.routes';
-import { createCutoverExportRouter } from './routes/cutover.routes';
-import { authenticate, requirePermission } from './middleware/access-control';
-import { exportMemorySnapshot } from './services/cutover.service';
-import memoryStorage from './storage/memory-storage';
-import { createQuotaRouter } from './routes/quota.routes';
-import { createAnalyticsRouter } from './routes/analytics.routes';
-import { mkdirSync, writeFileSync } from 'fs';
+import { securityHeaders } from './security/content-safety';
+import { correlationMiddleware } from './observability/telemetry';
+import { buildUserSafeErrorResponse, classifyError } from './errors/error-taxonomy';
+
+import { validateEnvironment } from './config/env-validator';
+import { VERIFICATION_CONTRACT_VERSION } from './services/payment-verification';
 
 dotenv.config();
 assertSafeEnvironment();
@@ -41,8 +40,20 @@ paymentMonitorService.configure({
   ),
 });
 
+// Validate startup environment and secrets safely
+const envCheck = validateEnvironment(process.env, { strict: process.env.NODE_ENV === 'production' });
+if (envCheck.issues.length > 0 && process.env.NODE_ENV !== 'test') {
+  console.warn(`⚠️ Configuration warnings detected:\n  - ${envCheck.issues.join('\n  - ')}`);
+}
+
 const app: Application = express();
-const PORT = process.env.PORT || 3001;
+const PORT = envCheck.validated.PORT || process.env.PORT || 3001;
+
+// Correlation ID & Latency Tracking
+app.use(correlationMiddleware());
+
+// Restrictive security headers on every API response
+app.use(securityHeaders());
 
 // Middleware
 app.use(cors(corsOptions()));
@@ -52,7 +63,7 @@ app.use(express.urlencoded({ extended: true, limit: '16kb' }));
 
 // Request logging
 app.use((req: Request, res: Response, next: NextFunction) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  console.log(`${new Date().toISOString()} [${req.correlationId}] - ${req.method} ${req.path}`);
   next();
 });
 
@@ -71,16 +82,12 @@ app.get('/', (req: Request, res: Response) => {
 app.get('/api/health', healthHandler(memoryInvoiceStorage.mode));
 app.get('/api/ready', readinessHandler(memoryInvoiceStorage.mode));
 
-app.use('/api', createAuthRouter());
-app.use('/api', createReconciliationRouter({ storage: memoryInvoiceStorage }));
+// Invoice, Audit & Observability routes
 app.use('/api', createInvoiceRouter({ storage: memoryInvoiceStorage }));
-app.use('/api', createEmailRouter({ storage: memoryInvoiceStorage }));
-app.use('/api', createQuotaRouter());
-app.use('/api', createAnalyticsRouter());
-// Bulk import (issue #53). Dry run by default; opt in with dryRun: false.
-app.use('/api', createImportRouter({ storage: memoryInvoiceStorage }));
-app.use('/api', createPaymentMonitorRouter(paymentMonitorService));
-app.use('/api', createCutoverExportRouter());
+app.use('/api', createAuditRouter({ storage: memoryInvoiceStorage }));
+app.use('/api', createObservabilityRouter({ storage: memoryInvoiceStorage }));
+app.use('/api', createNotificationRouter());
+app.use('/api', createExportRouter({ storage: memoryInvoiceStorage }));
 
 // Mock Stellar endpoint (MVP only)
 app.get('/api/stellar/account', authenticate(), requirePermission('stellar:read'), (req: Request, res: Response) => {
@@ -95,10 +102,11 @@ app.get('/api/stellar/account', authenticate(), requirePermission('stellar:read'
       sequence: '12345678',
       subentryCount: 0,
     },
+    correlationId: req.correlationId,
   });
 });
 
-// Error handling middleware
+// User-Safe Error handling middleware with taxonomy and correlation tracking
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   if ((err as any).type === 'entity.too.large' || (err as any).status === 413 || (err as any).statusCode === 413) {
     return res.status(413).json({
@@ -108,21 +116,20 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     });
   }
   console.error('Unhandled error:', err);
-  const code = (err as Error & { code?: string }).code;
-  // Keep the shared failure envelope: `success:false` with an optional stable
-  // `code`, the same shape every route and the verify path already use.
-  res.status(code === 'CORS_ORIGIN_DENIED' ? 403 : 500).json({
-    success: false,
-    code,
-    error: err.message || 'Internal server error',
-  });
+  const classified = classifyError(err);
+  const status = (err as any).code === 'CORS_ORIGIN_DENIED' ? 403 : classified.httpStatus || 500;
+  const payload = buildUserSafeErrorResponse(err, req.correlationId);
+
+  res.status(status).json(payload);
 });
 
 // 404 handler
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
+    code: 'NOT_FOUND',
     error: 'Endpoint not found',
+    correlationId: req.correlationId,
   });
 });
 

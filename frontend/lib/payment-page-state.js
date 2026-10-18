@@ -1,5 +1,5 @@
 /**
- * Pay-page state machine (issue #231).
+ * Pay-page state machine (issues #231, #151).
  *
  * The pay page combines Freighter payment, background polling, manual hash
  * verification, payer metadata and expiry handling. Keeping those transitions
@@ -47,25 +47,65 @@ const asInvoice = (statusOrInvoice) =>
 const isExpiredInvoice = (statusOrInvoice, now) =>
   hasInvoiceExpired(asInvoice(statusOrInvoice), now);
 
+/**
+ * Hardened check for whether payment controls (Freighter pay button, memo input, etc.)
+ * should be rendered (#151).
+ *
+ * Guarantees:
+ * - Fails closed if invoice is expired (by explicit status or timestamp).
+ * - Fails closed if invoice status is not PENDING.
+ * - Fails closed if a transaction hash has already been attached/provided.
+ * - Fails closed on missing or malformed inputs without throwing exceptions.
+ */
 const shouldShowPaymentControls = (statusOrInvoice, paymentTxHash, now) => {
+  if (!statusOrInvoice) {
+    return false;
+  }
   const invoice = asInvoice(statusOrInvoice);
+  if (!invoice || typeof invoice !== 'object') {
+    return false;
+  }
+
   if (isExpiredInvoice(invoice, now)) {
     return false;
   }
 
-  return invoice.status === 'PENDING' && !(paymentTxHash ?? invoice.paymentTxHash);
+  const effective = effectiveInvoiceStatus(invoice, now);
+  if (effective !== 'PENDING') {
+    return false;
+  }
+
+  const txHash = paymentTxHash ?? invoice.paymentTxHash;
+  if (txHash && typeof txHash === 'string' && txHash.trim().length > 0) {
+    return false;
+  }
+
+  return true;
 };
 
 /** Stable presentation flags shared by the route and component-level tests. */
-function getPayPageView(invoice) {
-  const status = invoice?.status;
+function getPayPageView(invoice, now) {
+  if (!invoice) {
+    return {
+      expired: false,
+      paid: false,
+      showPaymentControls: false,
+      showProof: false,
+      showMonitor: false,
+    };
+  }
+
+  const isExpired = isExpiredInvoice(invoice, now);
+  const effective = effectiveInvoiceStatus(invoice, now);
+  const isPaid = effective === 'PAID' || invoice.status === 'PAID';
+  const hasTxHash = Boolean(invoice.paymentTxHash && String(invoice.paymentTxHash).trim().length > 0);
+
   return {
-    expired: isExpiredInvoice(status),
-    cancelled: status === 'CANCELLED',
-    paid: status === 'PAID',
-    showPaymentControls: shouldShowPaymentControls(status, invoice?.paymentTxHash),
-    showProof: status === 'PAID' && Boolean(invoice?.paymentTxHash),
-    showMonitor: status === 'PENDING' && !invoice?.paymentTxHash,
+    expired: isExpired,
+    paid: isPaid,
+    showPaymentControls: shouldShowPaymentControls(invoice, invoice.paymentTxHash, now),
+    showProof: isPaid && hasTxHash,
+    showMonitor: effective === 'PENDING' && !hasTxHash && !isExpired,
   };
 }
 
@@ -88,15 +128,16 @@ function getPayPageWalletGate(invoice, session, expectedNetwork, now) {
 
 /** Maps an invoice status onto the state it forces, or null if it forces none. */
 function stateForStatus(statusOrInvoice, now) {
-  const status = effectiveInvoiceStatus(asInvoice(statusOrInvoice), now);
+  const invoice = asInvoice(statusOrInvoice);
+  const status = effectiveInvoiceStatus(invoice, now);
   if (status === 'PAID') return PAY_STATES.PAID;
-  if (isExpiredInvoice(status)) return PAY_STATES.EXPIRED;
+  if (status === 'EXPIRED' || isExpiredInvoice(invoice, now)) return PAY_STATES.EXPIRED;
   return null;
 }
 
-function initialPaymentState(invoice) {
+function initialPaymentState(invoice, now) {
   return {
-    status: invoice ? stateForStatus(invoice) ?? PAY_STATES.IDLE : PAY_STATES.IDLE,
+    status: invoice ? stateForStatus(invoice, now) ?? PAY_STATES.IDLE : PAY_STATES.IDLE,
     invoice: invoice ?? null,
     txHash: invoice?.paymentTxHash ?? null,
     error: null,
@@ -110,6 +151,10 @@ function initialPaymentState(invoice) {
  * cause a re-render.
  */
 function paymentReducer(state, event) {
+  if (!state || typeof state !== 'object') {
+    return initialPaymentState(null);
+  }
+
   switch (event?.type) {
     // The ledger's answer always wins over any local state.
     case 'INVOICE_LOADED':
@@ -121,7 +166,7 @@ function paymentReducer(state, event) {
         return {
           status: forced,
           invoice,
-          txHash: invoice.paymentTxHash ?? state.txHash,
+          txHash: invoice?.paymentTxHash ?? state.txHash,
           error: null,
         };
       }
@@ -189,10 +234,10 @@ function paymentReducer(state, event) {
  * Polling exists to notice a payment the page did not make itself, so it stops
  * as soon as the answer is known and never runs against a terminal state.
  */
-function shouldPoll(state) {
+function shouldPoll(state, now) {
   if (!state?.invoice) return false;
-  if (isTerminalPayState(state.status)) return false;
-  return effectiveInvoiceStatus(state.invoice) === 'PENDING';
+  if (TERMINAL_STATES.includes(state.status)) return false;
+  return effectiveInvoiceStatus(state.invoice, now) === 'PENDING';
 }
 
 /** Email shape accepted for payer metadata. Mirrors the backend's own check. */
@@ -206,8 +251,12 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * the backend — which is exactly how the three drift apart.
  */
 function normalizePayerDetails(details) {
-  const payerName = (details?.payerName ?? '').trim();
-  const payerEmail = (details?.payerEmail ?? '').trim();
+  if (!details || typeof details !== 'object') {
+    return { ok: true, value: { payerName: undefined, payerEmail: undefined } };
+  }
+
+  const payerName = (details.payerName ?? '').trim();
+  const payerEmail = (details.payerEmail ?? '').trim();
 
   if (payerEmail && !EMAIL_PATTERN.test(payerEmail)) {
     return { ok: false, error: 'Enter a valid payer email' };

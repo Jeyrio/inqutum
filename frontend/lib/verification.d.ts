@@ -22,6 +22,7 @@ export interface VerificationFailure {
   ok: false;
   code: VerificationCode;
   error: string;
+  recoveryAction?: string;
 }
 
 export interface VerificationSuccess<T> {
@@ -36,7 +37,17 @@ export interface PayerInfo {
   payerEmail?: string;
 }
 
+export interface UserSafeErrorDetails {
+  code?: string;
+  message: string;
+  category: string;
+  retryable: boolean;
+  recoveryAction: string;
+  correlationId?: string;
+}
+
 export const VERIFICATION_MESSAGES: Record<VerificationCode, string>;
+export const RECOVERY_ACTIONS: Record<VerificationCode, string>;
 
 export function messageForCode(code: unknown): string | undefined;
 
@@ -49,3 +60,5 @@ export function checkTxHash(txHash: unknown): VerificationResult<string>;
 export function checkPayerInfo(input: PayerInfo): VerificationResult<PayerInfo>;
 
 export function resolveVerificationError(error: unknown, fallback?: string): string;
+
+export function resolveUserSafeError(error: unknown, fallback?: string): UserSafeErrorDetails;

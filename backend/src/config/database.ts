@@ -19,15 +19,19 @@ export const pool = new Pool({
 
 pool.on('error', (err) => {
   console.error('Unexpected database error:', err);
-  process.exit(-1);
 });
 
 export const query = async (text: string, params?: any[]) => {
   const start = Date.now();
-  const res = await pool.query(text, params);
-  const duration = Date.now() - start;
-  console.log('Executed query', { text, duration, rows: res.rowCount });
-  return res;
+  try {
+    const res = await pool.query(text, params);
+    const duration = Date.now() - start;
+    console.log('Executed query', { text, duration, rows: res.rowCount });
+    return res;
+  } catch (err) {
+    console.error('Database query error:', { text, error: err });
+    throw err;
+  }
 };
 
 export default pool;

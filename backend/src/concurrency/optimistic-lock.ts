@@ -1,67 +1,55 @@
-export type OptimisticLockCode =
-  | 'LOCK_ACQUIRED'
-  | 'STALE_VERSION'
-  | 'INVALID_EXPECTED_VERSION'
-  | 'LOCK_STORE_UNAVAILABLE';
+/**
+ * Optimistic concurrency control for invoice state transitions.
+ *
+ * Each invoice carries a `version` counter that increments on every write.
+ * Clients pass the expected version; if another session has written in the
+ * meantime the version will not match and a ConflictError is thrown.
+ *
+ * Old clients that do not send a version are allowed through (backward compat).
+ */
 
-export type OptimisticLockResult =
-  | { ok: true; code: 'LOCK_ACQUIRED'; nextVersion: number }
-  | { ok: false; code: Exclude<OptimisticLockCode, 'LOCK_ACQUIRED'>; message: string; recoverable: boolean };
+export class ConflictError extends Error {
+  readonly code = 'CONFLICT' as const;
+  readonly currentVersion: number;
+  readonly attemptedVersion: number;
 
-export interface VersionedRecord {
-  id: string;
-  version: number;
-}
-
-export interface OptimisticLockStore {
-  readVersion(id: string): Promise<number | undefined>;
-  writeVersion(id: string, expectedVersion: number, nextVersion: number): Promise<boolean>;
-}
-
-export async function acquireOptimisticLock(
-  store: OptimisticLockStore,
-  record: VersionedRecord,
-  expectedVersion: number
-): Promise<OptimisticLockResult> {
-  if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
-    return {
-      ok: false,
-      code: 'INVALID_EXPECTED_VERSION',
-      message: 'Expected version must be a non-negative integer.',
-      recoverable: false,
-    };
+  constructor(currentVersion: number, attemptedVersion: number) {
+    super(
+      `Invoice was modified by another session (current version: ${currentVersion}, attempted: ${attemptedVersion}). Please refresh and try again.`
+    );
+    this.name = 'ConflictError';
+    this.currentVersion = currentVersion;
+    this.attemptedVersion = attemptedVersion;
   }
+}
 
-  try {
-    const currentVersion = await store.readVersion(record.id);
-    const observedVersion = currentVersion ?? record.version;
-    if (observedVersion !== expectedVersion) {
-      return {
-        ok: false,
-        code: 'STALE_VERSION',
-        message: 'Record changed before the operation could be committed.',
-        recoverable: true,
-      };
-    }
+export class InvalidVersionError extends Error {
+  readonly code = 'INVALID_VERSION' as const;
 
-    const nextVersion = expectedVersion + 1;
-    const committed = await store.writeVersion(record.id, expectedVersion, nextVersion);
-    if (!committed) {
-      return {
-        ok: false,
-        code: 'STALE_VERSION',
-        message: 'Record changed during optimistic lock commit.',
-        recoverable: true,
-      };
-    }
+  constructor(readonly field: 'expected' | 'actual', readonly value: number) {
+    super(`${field} version must be a non-negative safe integer.`);
+    this.name = 'InvalidVersionError';
+  }
+}
 
-    return { ok: true, code: 'LOCK_ACQUIRED', nextVersion };
-  } catch {
-    return {
-      ok: false,
-      code: 'LOCK_STORE_UNAVAILABLE',
-      message: 'Optimistic lock store is unavailable; retry later.',
-      recoverable: true,
-    };
+function assertVersion(field: 'expected' | 'actual', value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new InvalidVersionError(field, value);
+  }
+}
+
+/**
+ * Compare the expected version with the actual version.
+ *
+ * - If `expected` is undefined (old client), the check is skipped.
+ * - If the versions match, the check passes silently.
+ * - If they differ, a ConflictError is thrown.
+ */
+export function checkVersion(expected: number | undefined, actual: number): void {
+  assertVersion('actual', actual);
+  if (expected === undefined) return;
+  assertVersion('expected', expected);
+  if (expected !== actual) {
+    throw new ConflictError(actual, expected);
   }
 }

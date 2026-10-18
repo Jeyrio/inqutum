@@ -1,70 +1,164 @@
 /**
- * Client-side fail-closed projection of the server expiry lifecycle.
- *
- * What a status allows comes from shared/invoice-lifecycle.ts, the same table
- * the backend stores enforce, so the UI cannot offer an action the server would
- * refuse. Only the clock is projected here: a PENDING invoice past its
- * expiresAt reads as EXPIRED before the server's sweep has recorded it.
+ * Client-side fail-closed projection of the server expiry lifecycle (issues #231, #150).
+ * Hardens boundary contracts for date parsing, status transitions, and immutability.
  */
 
-const {
-  INVOICE_STATUSES,
-  allowedTransitions,
-  canTransition,
-  isTerminalStatus,
-  nextStatus,
-} = require('../../shared/invoice-lifecycle.ts');
-
+/**
+ * Safely parses an expiry value into a numeric Unix millisecond timestamp.
+ *
+ * Handles ISO-8601 strings, Date instances, and epoch numeric timestamps
+ * (normalizing 10-digit epoch seconds to 13-digit milliseconds).
+ *
+ * @param {string | number | Date | null | undefined} expiresAt
+ * @returns {number | null} Unix millisecond timestamp or null if invalid/missing
+ */
 function expiryTimestamp(expiresAt) {
-  if (!expiresAt) return null;
-  const timestamp = new Date(expiresAt).getTime();
-  return Number.isFinite(timestamp) ? timestamp : null;
+  if (expiresAt === null || expiresAt === undefined || expiresAt === '') {
+    return null;
+  }
+
+  // Handle epoch seconds vs milliseconds if passed as number
+  if (typeof expiresAt === 'number') {
+    if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+    return expiresAt < 1e11 ? Math.floor(expiresAt * 1000) : Math.floor(expiresAt);
+  }
+
+  // Handle Date instance or date string
+  try {
+    const parsed = new Date(expiresAt).getTime();
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
+/**
+ * Normalizes reference time 'now' into a finite millisecond timestamp.
+ * Fallbacks to Date.now() if invalid or not supplied.
+ *
+ * @param {number | string | Date} now
+ * @returns {number}
+ */
+function normalizeNow(now) {
+  if (now === undefined || now === null) {
+    return Date.now();
+  }
+  if (typeof now === 'number' && Number.isFinite(now)) {
+    return now;
+  }
+  const parsed = new Date(now).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+/**
+ * Determines whether an invoice has reached or exceeded its expiration.
+ *
+ * Fail-closed rules:
+ * - Invoices explicitly marked 'EXPIRED' always return true.
+ * - Invoices with status other than 'PENDING' (e.g. 'PAID', 'CANCELLED') never expire.
+ * - If expiresAt <= now, returns true.
+ * - Returns false for null/undefined invoices or unresolvable timestamps.
+ *
+ * @param {{ status?: string, expiresAt?: any }} invoice
+ * @param {number | string | Date} now
+ * @returns {boolean}
+ */
 function hasInvoiceExpired(invoice, now = Date.now()) {
-  if (!invoice) return false;
-  if (invoice.status === 'EXPIRED') return true;
-  if (invoice.status !== 'PENDING') return false;
+  if (!invoice || typeof invoice !== 'object') {
+    return false;
+  }
+
+  // Status-based early checks
+  if (invoice.status === 'EXPIRED') {
+    return true;
+  }
+  if (invoice.status !== 'PENDING') {
+    return false;
+  }
 
   const expiresAt = expiryTimestamp(invoice.expiresAt);
-  return expiresAt !== null && expiresAt <= new Date(now).getTime();
+  if (expiresAt === null) {
+    return false;
+  }
+
+  const current = normalizeNow(now);
+  return expiresAt <= current;
 }
 
+/**
+ * Returns the effective lifecycle status of an invoice.
+ *
+ * Returns 'EXPIRED' if an invoice has expired; otherwise returns the declared status.
+ *
+ * @param {{ status?: string, expiresAt?: any }} invoice
+ * @param {number | string | Date} now
+ * @returns {string | undefined}
+ */
 function effectiveInvoiceStatus(invoice, now = Date.now()) {
-  return hasInvoiceExpired(invoice, now) ? 'EXPIRED' : invoice?.status;
+  if (!invoice || typeof invoice !== 'object') {
+    return undefined;
+  }
+  return hasInvoiceExpired(invoice, now) ? 'EXPIRED' : invoice.status;
 }
 
+/**
+ * Returns an invoice with its status updated to 'EXPIRED' if it has expired.
+ * Preserves object immutability: returns the original reference if unchanged.
+ *
+ * @param {T} invoice
+ * @param {number | string | Date} now
+ * @returns {T}
+ */
 function applyExpiryStatus(invoice, now = Date.now()) {
-  if (!invoice || effectiveInvoiceStatus(invoice, now) === invoice.status) return invoice;
+  if (!invoice || typeof invoice !== 'object') {
+    return invoice;
+  }
+  if (effectiveInvoiceStatus(invoice, now) === invoice.status) {
+    return invoice;
+  }
   return { ...invoice, status: 'EXPIRED' };
 }
 
+/**
+ * Applies expiry lifecycle transitions across a collection of invoices.
+ * Returns an empty array if input is not an array.
+ *
+ * @param {Array<any>} invoices
+ * @param {number | string | Date} now
+ * @returns {Array<any>}
+ */
 function applyExpiryLifecycle(invoices, now = Date.now()) {
-  if (!Array.isArray(invoices)) return [];
+  if (!Array.isArray(invoices)) {
+    return [];
+  }
   return invoices.map((invoice) => applyExpiryStatus(invoice, now));
 }
 
+/**
+ * Checks if an invoice is in an actionable state (ready to receive payments).
+ * An invoice is actionable only if its effective status is 'PENDING' and no
+ * transaction hash has been registered.
+ *
+ * @param {{ status?: string, paymentTxHash?: string, expiresAt?: any }} invoice
+ * @param {number | string | Date} now
+ * @returns {boolean}
+ */
 function isActionableInvoice(invoice, now = Date.now()) {
-  return canPayInvoice(invoice, now);
-}
+  if (!invoice || typeof invoice !== 'object') {
+    return false;
+  }
 
-/**
- * Whether the seller may cancel the invoice right now. Asks the lifecycle for
- * the CANCEL event rather than hard-coding "is PENDING", and honours expiry.
- */
-function canCancelInvoice(invoice, now = Date.now()) {
-  if (!invoice) return false;
-  return nextStatus(effectiveInvoiceStatus(invoice, now), 'CANCEL') !== null;
-}
+  const effective = effectiveInvoiceStatus(invoice, now);
+  if (effective !== 'PENDING') {
+    return false;
+  }
 
-/**
- * Whether a payer may still settle the invoice on time. This is the SETTLE
- * event, not "any transition to PAID": a cancelled invoice can be settled late
- * by the server when a payment is found, but the UI must never invite one.
- */
-function canPayInvoice(invoice, now = Date.now()) {
-  if (!invoice || invoice.paymentTxHash) return false;
-  return nextStatus(effectiveInvoiceStatus(invoice, now), 'SETTLE') !== null;
+  const hash = invoice.paymentTxHash;
+  if (hash && typeof hash === 'string' && hash.trim().length > 0) {
+    return false;
+  }
+
+  return true;
 }
 
 module.exports = {

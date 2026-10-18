@@ -7,6 +7,8 @@ import {
 } from '../domain/invoice-expiry';
 import { NATIVE_ASSET_CODE, requiresIssuer } from './asset-helpers';
 import { SUPPORTED_STELLAR_NETWORKS } from '../config/stellar';
+import { DEFAULT_POLICY } from '../domain/policy';
+import { sanitizePlainText } from '../security/content-safety';
 
 // Schemas used identically by both servers. Zod validates the create+verify
 // payloads before they ever reach the InvoiceStorage layer, so the memory
@@ -29,54 +31,24 @@ export const stellarPublicKeySchema = z.string()
  * paid. `XLM` is the exception: it is the native asset and has no issuer.
  */
 /**
- * Issuer of a credit asset (issue #8): a well-formed Ed25519 strkey, including
- * its checksum. Case is NOT normalized: strkeys are canonical uppercase base32
- * and a key in any other case is a different (invalid) string, so it is
- * rejected rather than "fixed".
+ * Free-text fields are length-checked as submitted, then stripped of markup,
+ * control and bidi characters. A value that is empty after stripping is dropped.
  */
-export const assetIssuerSchema = stellarPublicKeySchema.refine(
-  (key) => StellarSdk.StrKey.isValidEd25519PublicKey(key),
-  'Invalid Stellar issuer key (checksum failed)',
-);
-
-/**
- * Asset code as typed by a seller (issue #8). This is the friendly half of the
- * create/verify split: surrounding whitespace is trimmed and the code is
- * uppercased ("usdc" -> "USDC", the Stellar convention), then checked against
- * the protocol's 1-12 character alphanumeric shape. Verification, by contrast,
- * compares the stored code and issuer byte-for-byte with no normalization.
- */
-export const assetCodeSchema = z
-  .string()
-  .transform((code) => code.trim().toUpperCase())
-  .pipe(z.string().regex(/^[A-Z0-9]{1,12}$/, 'Asset code must be 1-12 letters or digits'));
-
-/**
- * Caller-supplied import key (issue #53).
- *
- * Bounded to the `invoices.external_id VARCHAR(255)` column and restricted to
- * printable characters so a key can be echoed into remediation messages and
- * compared without normalisation surprises. Matching is case-SENSITIVE, which
- * matches the case-sensitive partial unique index in db/schema.sql.
- */
-const externalIdSchema = z
-  .string()
-  .trim()
-  .min(1, 'externalId must not be empty')
-  .max(255, 'externalId must be at most 255 characters')
-  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), {
-    message: 'externalId must not contain control characters',
-  });
+const plainText = (max: number, multiline = false) =>
+  z
+    .string()
+    .max(max)
+    .transform((value) => sanitizePlainText(value, { multiline }) || undefined);
 
 export const createInvoiceSchema = z
   .object({
-    amount: z.number().positive().max(1000000000),
-    assetCode: assetCodeSchema.default('XLM').optional(),
-    assetIssuer: assetIssuerSchema.optional(),
-    description: z.string().max(500).optional(),
-    customerName: z.string().max(255).optional(),
+    amount: z.number().positive().max(DEFAULT_POLICY.invoice.maxAmount),
+    assetCode: z.string().default('XLM').optional(),
+    assetIssuer: stellarPublicKeySchema.optional(),
+    description: plainText(500, true).optional(),
+    customerName: plainText(255).optional(),
     customerEmail: z.string().email().optional(),
-    sellerName: z.string().max(255).optional(),
+    sellerName: plainText(255).optional(),
     sellerEmail: z.string().email().optional(),
     network: z.enum(SUPPORTED_STELLAR_NETWORKS).optional(),
     expiresInDays: z.number()

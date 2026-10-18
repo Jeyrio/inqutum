@@ -4,7 +4,8 @@ import { generatePublicInvoiceId } from '../utils/memory-public-id';
 import { CreateInvoiceInput } from '../utils/validation';
 import memoryStorage, { MemoryStorage, MemoryPaymentEvent } from '../storage/memory-storage';
 import { calculateInvoiceExpiry } from '../domain/invoice-expiry';
-import type { AuditEvent, StoredInvoice } from '../storage/invoice-storage';
+import type { StoredInvoice } from '../storage/invoice-storage';
+import { compareNewestFirst, isAfterCursor, type InvoiceCursor } from '../storage/invoice-cursor';
 import type { InvoiceStats } from '../storage/invoice-stats';
 import type { ReconciliationInvoice } from '../domain/reconciliation';
 import type { MarkAsPaidOptions, PayerInfo } from '../storage/invoice-storage';
@@ -51,7 +52,9 @@ export class InvoiceMemoryService {
       externalId: input.externalId,
     });
 
-    console.log('✅ Invoice created:', invoice.id);
+    if (process.env.NODE_ENV !== 'test') {
+      console.log('✅ Invoice created:', invoice.id);
+    }
     return invoice;
   }
 
@@ -117,9 +120,9 @@ export class InvoiceMemoryService {
     txHash: string,
     payerPublicKey: string,
     payerInfo?: PayerInfo,
-    options?: MarkAsPaidOptions
+    expectedVersion?: number
   ): Promise<StoredInvoice> {
-    const invoice = this.storage.markAsPaid(invoiceId, txHash, payerPublicKey, payerInfo, options);
+    const invoice = this.storage.markAsPaid(invoiceId, txHash, payerPublicKey, payerInfo, expectedVersion);
 
     if (!invoice) {
       throw new Error('Invoice not found');
@@ -133,7 +136,8 @@ export class InvoiceMemoryService {
     sellerPublicKey: string,
     status?: string,
     limit: number = 50,
-    offset: number = 0
+    offset: number = 0,
+    after?: InvoiceCursor
   ): Promise<StoredInvoice[]> {
     let invoices = this.storage.getAllInvoices(status ? { status } : undefined);
 
@@ -141,39 +145,29 @@ export class InvoiceMemoryService {
       invoices = invoices.filter((inv) => inv.sellerPublicKey === sellerPublicKey);
     }
 
+    invoices.sort(compareNewestFirst);
+    if (after) invoices = invoices.filter((inv) => isAfterCursor(inv, after));
+
     return invoices.slice(offset, offset + limit);
   }
 
-  async cancelInvoice(invoiceId: string, sellerPublicKey?: string): Promise<StoredInvoice> {
-    const updated = this.storage.cancelInvoice(invoiceId, sellerPublicKey);
+  async cancelInvoice(invoiceId: string, expectedVersion?: number): Promise<StoredInvoice> {
+    const invoice = this.storage.getInvoiceById(invoiceId);
+
+    if (!invoice || invoice.status !== 'PENDING') {
+      throw new Error('Invoice not found or already processed');
+    }
+
+    const updated = this.storage.updateInvoice(invoiceId, { status: 'CANCELLED' }, expectedVersion);
     if (!updated) {
       throw new Error('Invoice not found');
     }
     return updated;
   }
 
-  async logPaymentEvent(invoiceId: string, eventType: string, eventData: any): Promise<void> {
-    this.storage.logPaymentEvent(invoiceId, eventType, eventData);
-  }
-
-  async getAuditTrail(invoiceId: string): Promise<AuditEvent[]> {
-    return this.storage.getAuditTrail(invoiceId);
-  }
-
-  async listInvoicesForReconciliation(): Promise<ReconciliationInvoice[]> {
-    return this.storage.snapshotInvoices();
-  }
-
-  async listAuditEvents(): Promise<AuditEvent[]> {
-    return this.storage.snapshotAuditEvents();
-  }
-
-  async readInvoiceStats(sellerPublicKey: string): Promise<InvoiceStats[]> {
-    return [this.storage.readStats(sellerPublicKey)];
-  }
-
-  async getPaymentEvents(invoiceId?: string): Promise<MemoryPaymentEvent[]> {
-    return this.storage.getPaymentEvents(invoiceId);
+  async findOverduePendingInvoices(cutoff: Date, limit: number) {
+    const overdue = this.storage.findOverduePending(cutoff);
+    return { total: overdue.length, invoices: overdue.slice(0, limit) };
   }
 
   async markExpiredInvoices(now?: Date): Promise<number> {
@@ -184,12 +178,8 @@ export class InvoiceMemoryService {
     return [this.storage.getStats(sellerPublicKey)];
   }
 
-  async countInvoices(): Promise<number> {
-    return this.storage.countInvoices();
-  }
-
-  async purgeStaleInvoices(options: { maxAgeHours: number; statuses?: any[] }): Promise<number> {
-    return this.storage.purgeStaleInvoices(options);
+  async getAllInvoices(filter?: { status?: string }): Promise<StoredInvoice[]> {
+    return this.storage.getAllInvoices(filter);
   }
 }
 

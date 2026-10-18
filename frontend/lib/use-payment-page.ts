@@ -27,6 +27,7 @@ export function usePaymentPage(id: string) {
   const [payerName, setPayerName] = useState('');
   const [payerEmail, setPayerEmail] = useState('');
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
   const generation = useRef(0);
 
   const load = useCallback(async () => {
@@ -63,6 +64,7 @@ export function usePaymentPage(id: string) {
     setLoading(true);
     setPaymentInfo(null);
     setTxHash('');
+    setVerifyError(null);
     dispatch({ type: 'INVOICE_LOADED', invoice: null });
     void load();
     return () => {
@@ -88,36 +90,40 @@ export function usePaymentPage(id: string) {
     return () => clearInterval(interval);
   }, [id, payment, paymentInfo?.statusPollingIntervalMs]);
 
-  const verify = async () => {
+  // Every failure goes through the reducer so the status region announces it.
+  const failVerify = (message: string) => {
+    setVerifyError(message);
+    dispatch({ type: 'VERIFY_FAILED', error: message });
+    toast.error(message);
+    return false;
+  };
+
+  /** Resolves true when the transaction verified. */
+  const verify = async (): Promise<boolean> => {
     const checked = checkTxHash(txHash);
-    if (!checked.ok) return toast.error(checked.error);
+    if (!checked.ok) return failVerify(checked.error);
     const payer = normalizePayerDetails({ payerName, payerEmail });
-    if (!payer.ok) return toast.error(payer.error);
+    if (!payer.ok) return failVerify(payer.error);
+    setVerifyError(null);
     dispatch({ type: 'VERIFY_STARTED' });
     const request = generation.current;
     try {
       const result = await invoiceApi.verify(id, checked.value, payer.value);
-      if (request !== generation.current) return;
+      if (request !== generation.current) return false;
       dispatch({ type: 'VERIFY_SUCCEEDED', invoice: result?.data ?? null });
       toast.success('Transaction verified!');
       void load();
+      return true;
     } catch (error) {
-      if (request !== generation.current) return;
-
-      // A Horizon or transport failure is not a rejection: keep the session,
-      // say it is retryable, and leave the verify control in place.
-      if (isHorizonOutageError(error)) {
-        setLoadError(HORIZON_OUTAGE_MESSAGE);
-        dispatch({ type: 'VERIFY_UNAVAILABLE' });
-        toast.error(HORIZON_OUTAGE_MESSAGE);
-        return;
-      }
-
-      const message = resolveVerificationError(error);
+      if (request !== generation.current) return false;
       if (isApiUnavailableError(error)) setLoadError(apiErrorMessage(error));
-      dispatch({ type: 'VERIFY_FAILED', error: message });
-      toast.error(message);
+      return failVerify(describeVerifyError(error));
     }
+  };
+
+  const changeTxHash = (value: string) => {
+    setTxHash(value);
+    setVerifyError(null);
   };
 
   return {
@@ -128,7 +134,9 @@ export function usePaymentPage(id: string) {
     paymentInfo,
     wallet: connected ? publicKey : null,
     txHash,
-    setTxHash,
+    setTxHash: changeTxHash,
+    verifyError,
+    paymentState: payment,
     payerName,
     setPayerName,
     payerEmail,

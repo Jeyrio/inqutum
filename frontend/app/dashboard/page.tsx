@@ -36,11 +36,18 @@ export default function DashboardPage() {
   const gate = walletGate({ freighterAvailable, connected, publicKey, network }, EXPECTED_WALLET_NETWORK);
   // Loaded data is tagged with the wallet it belongs to, so a response for a
   // previous seller can never be rendered under the current one.
-  const [loaded, setLoaded] = useState<{ owner: string | null; invoices: any[]; stats: any }>({
+  const [loaded, setLoaded] = useState<{
+    owner: string | null;
+    invoices: any[];
+    stats: any;
+    nextCursor: string | null;
+  }>({
     owner: null,
     invoices: [],
     stats: null,
+    nextCursor: null,
   });
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<DashboardSortBy>('newest');
@@ -65,8 +72,8 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (!gate.ready || !publicKey) {
-      setLoaded({ owner: null, invoices: [], stats: null });
+    if (!connected || !publicKey) {
+      setLoaded({ owner: null, invoices: [], stats: null, nextCursor: null });
       setLoading(false);
       return;
     }
@@ -91,6 +98,7 @@ export default function DashboardPage() {
           owner: publicKey,
           invoices: invoicesResult.data,
           stats: statsResult.data[0] || {},
+          nextCursor: invoicesResult.pagination?.nextCursor ?? null,
         });
       } catch (error) {
         if (!active) return;
@@ -126,6 +134,35 @@ export default function DashboardPage() {
       };
     });
     setReloadKey((k) => k + 1);
+  };
+
+  const loadMore = async () => {
+    const cursor = loaded.nextCursor;
+    if (!cursor || !publicKey) return;
+    setLoadingMore(true);
+    try {
+      const page = await invoiceApi.getAll({
+        status: filter === 'all' ? undefined : filter.toUpperCase(),
+        limit: 50,
+        sellerPublicKey: publicKey,
+        cursor,
+      });
+      // Only append onto the page this cursor came from; a filter or wallet
+      // switch in the meantime has already replaced it.
+      setLoaded((prev) =>
+        prev.nextCursor === cursor
+          ? {
+              ...prev,
+              invoices: [...prev.invoices, ...page.data],
+              nextCursor: page.pagination?.nextCursor ?? null,
+            }
+          : prev
+      );
+    } catch (error) {
+      toast.error(apiErrorMessage(error, 'Failed to load more invoices'));
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
   const handleExportCSV = () => {
@@ -174,15 +211,15 @@ export default function DashboardPage() {
               <UserProfile userWallet={publicKey} />
             )}
             <Link href="/" className="btn btn-primary flex items-center gap-2">
-              <Plus className="w-5 h-5" aria-hidden="true" />
-              <span className="hidden sm:inline">New Invoice</span>
-              <span className="sm:hidden sr-only">New Invoice</span>
+              <Plus className="w-5 h-5" />
+              <span className="sr-only sm:not-sr-only">New Invoice</span>
             </Link>
           </nav>
         </div>
       </header>
 
-      <main id={MAIN_CONTENT_ID} tabIndex={-1} className="pt-20">
+      <main id="main-content" className="pt-20">
+        <h1 className="sr-only">Invoice dashboard</h1>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 relative z-10">
         <h1 className="sr-only">Invoice dashboard</h1>
         {connected && isWrongNetwork && (
@@ -313,10 +350,8 @@ export default function DashboardPage() {
                   Search invoices
                 </label>
                 <input
-                  id="invoice-search"
-                  // type="search" so the control is announced as a search field
-                  // and gets the platform's clear affordance.
                   type="search"
+                  aria-label="Search invoices"
                   placeholder="Search invoices..."
                   className="input w-full"
                   value={searchQuery}
@@ -335,8 +370,8 @@ export default function DashboardPage() {
                 aria-describedby={canExport ? undefined : 'export-csv-reason'}
                 aria-label="Export paid invoices to CSV"
               >
-                <Download className="w-5 h-5" aria-hidden="true" />
-                <span className="hidden sm:inline">Export CSV</span>
+                <Download className="w-5 h-5" />
+                <span className="sr-only sm:not-sr-only">Export CSV</span>
               </button>
               {!canExport && (
                 <span id="export-csv-reason" className="sr-only">
@@ -391,15 +426,23 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <p
-              id={DASHBOARD_RESULTS_ID}
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-              className={`mb-4 text-sm ${loadError ? 'text-red-700' : 'text-gray-600'}`}
-            >
-              {resultsAnnouncement}
-            </p>
+            <div role="group" aria-label="Filter by status" className="bg-white rounded-lg border border-gray-200 mb-6 p-2 flex gap-2 flex-wrap">
+              {['all', 'pending', 'paid', 'expired', 'cancelled'].map((status) => (
+                <button
+                  key={status}
+                  type="button"
+                  onClick={() => setFilter(status)}
+                  aria-pressed={filter === status}
+                  className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                    filter === status
+                      ? 'bg-[var(--teal)] text-white'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {status.charAt(0).toUpperCase() + status.slice(1)}
+                </button>
+              ))}
+            </div>
 
             {loadError ? (
               <ApiErrorState
@@ -474,8 +517,22 @@ export default function DashboardPage() {
                       />
                     </li>
                   ))}
-                </ul>
-              </section>
+                </div>
+                {loaded.nextCursor && (
+                  <div className="mt-6 text-center">
+                    <button
+                      type="button"
+                      onClick={() => void loadMore()}
+                      disabled={loadingMore}
+                      aria-busy={loadingMore}
+                      className="btn btn-outline"
+                    >
+                      {loadingMore && <Loader2 className="w-4 h-4 animate-spin" aria-hidden />}
+                      Load more invoices
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </>
           </>

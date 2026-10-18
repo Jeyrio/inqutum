@@ -8,6 +8,7 @@ import { InvoiceService } from '../src/services/invoice.service.ts';
 import type { CreateInvoiceInput } from '../src/utils/validation.ts';
 import { PostgresInvoiceStorage } from '../src/storage/postgres-invoice-storage.ts';
 import type { PayerInfo, StoredInvoice } from '../src/storage/invoice-storage.ts';
+import { encodeInvoiceCursor, decodeInvoiceCursor } from '../src/storage/invoice-cursor.ts';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const SCHEMA_PATH = path.join(__dirname, '../../db/schema.sql');
@@ -69,6 +70,37 @@ describe('Invoice persistence on Postgres', { skip: DATABASE_URL ? false : 'DATA
       assert.equal(Number(statsB.total_invoices), 0);
     } finally {
       await readPool.end();
+    }
+  });
+
+  it('pages by cursor without duplicates across same-millisecond rows and concurrent inserts', async () => {
+    const pool = new Pool({ connectionString: DATABASE_URL });
+    const service = new InvoiceService(pool);
+    const seller = Keypair.random().publicKey();
+
+    try {
+      // Pin created_at to one microsecond-precision instant so ordering relies on id alone.
+      const ids: string[] = [];
+      for (let i = 0; i < 5; i++) ids.push((await service.createInvoice(createInput(seller))).id);
+      await pool.query(
+        "UPDATE invoices SET created_at = '2026-01-01T00:00:00.123456Z' WHERE seller_public_key = $1",
+        [seller]
+      );
+
+      const seen: string[] = [];
+      let after;
+      for (;;) {
+        const page = await service.getInvoicesBySeller(seller, undefined, 2, 0, after);
+        seen.push(...page.map(inv => inv.id));
+        if (page.length < 2) break;
+        after = decodeInvoiceCursor(encodeInvoiceCursor(page[page.length - 1]))!;
+        await service.createInvoice(createInput(seller)); // newer, lands before the cursor
+      }
+
+      assert.deepEqual(seen, [...ids].sort().reverse());
+    } finally {
+      await pool.query('DELETE FROM invoices WHERE seller_public_key = $1', [seller]);
+      await pool.end();
     }
   });
 

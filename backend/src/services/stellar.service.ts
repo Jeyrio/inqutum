@@ -1,6 +1,7 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { server, NETWORK_PASSPHRASE, getSellerKeypair } from '../config/stellar';
 import {
+  VERIFICATION_CONTRACT_VERSION,
   checkTxHash,
   failure,
   verifyHorizonPayment,
@@ -10,6 +11,21 @@ import type {
   VerificationResult,
   VerifiedPayment,
 } from './payment-verification';
+
+const STELLAR_PUBLIC_KEY_PATTERN = /^G[A-Z2-7]{55}$/;
+const STELLAR_AMOUNT_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d{1,7})?$/;
+
+export function isValidStellarPublicKey(publicKey: unknown): publicKey is string {
+  return typeof publicKey === 'string' && STELLAR_PUBLIC_KEY_PATTERN.test(publicKey.trim());
+}
+
+export function isValidStellarAmount(amount: unknown): amount is string {
+  return (
+    typeof amount === 'string' &&
+    STELLAR_AMOUNT_PATTERN.test(amount.trim()) &&
+    Number(amount) > 0
+  );
+}
 
 export interface PaymentRecord {
   id: string;
@@ -36,8 +52,12 @@ class StellarService {
    * Load account details from Stellar network
    */
   async loadAccount(publicKey: string): Promise<StellarSdk.Horizon.AccountResponse> {
+    if (!isValidStellarPublicKey(publicKey)) {
+      throw new Error('Invalid Stellar public key');
+    }
+
     try {
-      return await server.loadAccount(publicKey);
+      return await server.loadAccount(publicKey.trim());
     } catch (error: any) {
       console.error(`Error loading account ${publicKey}:`, error);
       throw new Error(`Account not found or network error: ${error.message}`);
@@ -96,9 +116,14 @@ class StellarService {
    * Get transaction details
    */
   async getTransaction(txHash: string): Promise<any> {
+    const normalizedHash = typeof txHash === 'string' ? txHash.trim() : '';
+    if (!/^[0-9a-f]{64}$/i.test(normalizedHash)) {
+      throw new Error('Transaction hash must be 64 hexadecimal characters');
+    }
+
     try {
-      const transaction = await server.transactions().transaction(txHash).call();
-      const operations = await server.operations().forTransaction(txHash).call();
+      const transaction = await server.transactions().transaction(normalizedHash).call();
+      const operations = await server.operations().forTransaction(normalizedHash).call();
       
       return {
         transaction,
@@ -271,6 +296,19 @@ class StellarService {
     assetCode: string = 'XLM',
     assetIssuer?: string
   ): Promise<string> {
+    if (!isValidStellarPublicKey(destination)) {
+      throw new Error('Invalid destination Stellar public key');
+    }
+    if (!isValidStellarAmount(amount)) {
+      throw new Error('Invalid Stellar payment amount');
+    }
+    if (Buffer.byteLength(memo || '', 'utf8') > 28) {
+      throw new Error('Stellar memo must be 28 bytes or fewer');
+    }
+    if (assetCode !== 'XLM' && !isValidStellarPublicKey(assetIssuer)) {
+      throw new Error('An asset issuer is required for non-XLM payments');
+    }
+
     try {
       const sourceKeypair = getSellerKeypair();
       const sourceAccount = await this.loadAccount(sourceKeypair.publicKey());

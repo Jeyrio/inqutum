@@ -123,6 +123,163 @@ describe('verifyHorizonPayment — happy path', () => {
 
     assert.equal(result.ok, true);
   });
+
+  it('matches a payment operation anywhere in a multi-operation transaction', () => {
+    const result = verifyHorizonPayment(
+      input({ operations: [{ type: 'manage_data' }, paymentOp()] })
+    );
+    assert.equal(result.ok, true);
+  });
+
+  it('finds the matching payment when earlier payments have different amounts', () => {
+    const result = verifyHorizonPayment(
+      input({ operations: [paymentOp({ amount: '1' }), paymentOp()] })
+    );
+    assert.equal(result.ok, true);
+  });
+
+  it('rejects path payments even when their destination and amount match', () => {
+    assert.equal(
+      codeOf(verifyHorizonPayment(
+        input({ operations: [{ ...paymentOp(), type: 'path_payment_strict_receive' }] })
+      )),
+      'NO_PAYMENT_OPERATION'
+    );
+    assert.equal(
+      codeOf(verifyHorizonPayment(
+        input({ operations: [{ ...paymentOp(), type: 'path_payment_strict_send' }] })
+      )),
+      'NO_PAYMENT_OPERATION'
+    );
+  });
+
+  it('chooses a later payment op whose asset matches when an earlier match does not', () => {
+    const result = verifyHorizonPayment(
+      input({
+        operations: [
+          paymentOp({
+            asset_type: 'credit_alphanum4',
+            asset_code: 'USDC',
+            asset_issuer: USDC_ISSUER,
+          }),
+          paymentOp(),
+        ],
+      })
+    );
+    assert.equal(result.ok, true);
+  });
+
+  it('settles an invoice when two payments share the invoice amount but only one matches', () => {
+    const result = verifyHorizonPayment(
+      input({ operations: [paymentOp({ to: OTHER_ACCOUNT }), paymentOp()] })
+    );
+    assert.equal(result.ok, true);
+  });
+
+  it('unwraps a fee-bump transaction and persists the outer hash', () => {
+    const result = verifyHorizonPayment(
+      input({
+        transaction: {
+          envelope_type: 'fee_bump',
+          memo: 'WRONG-OUTER-MEMO',
+          inner_transaction: { memo: 'INV-2K4H9', memo_type: 'text' },
+        },
+      })
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.value.txHash : '', TX_HASH);
+  });
+
+  it('rejects a fee-bumped payment whose inner memo does not match', () => {
+    const result = verifyHorizonPayment(
+      input({
+        transaction: {
+          envelope_type: 'fee_bump',
+          memo: 'INV-2K4H9',
+          inner_transaction: { memo: 'INV-WRONG', memo_type: 'text' },
+        },
+      })
+    );
+    assert.equal(codeOf(result), 'MEMO_MISMATCH');
+  });
+
+  it('rejects a fee-bumped payment with the wrong amount or destination', () => {
+    const wrongAmount = verifyHorizonPayment(
+      input({
+        transaction: {
+          envelope_type: 'fee_bump',
+          inner_transaction: { memo: 'INV-2K4H9', memo_type: 'text' },
+        },
+        operations: [paymentOp({ amount: '150' })],
+      })
+    );
+    assert.equal(codeOf(wrongAmount), 'AMOUNT_MISMATCH');
+
+    const wrongDestination = verifyHorizonPayment(
+      input({
+        transaction: {
+          envelope_type: 'fee_bump',
+          inner_transaction: { memo: 'INV-2K4H9', memo_type: 'text' },
+        },
+        operations: [paymentOp({ to: OTHER_ACCOUNT })],
+      })
+    );
+    assert.equal(codeOf(wrongDestination), 'DESTINATION_MISMATCH');
+  });
+
+  it('does not throw when a fee-bump envelope has no inner transaction', () => {
+    const result = verifyHorizonPayment(
+      input({
+        transaction: { envelope_type: 'fee_bump', memo: 'INV-2K4H9' },
+        operations: [paymentOp()],
+      })
+    );
+    assert.equal(result.ok, true);
+  });
+
+  it('requires the exact muxed destination when a sub-account id is present', () => {
+    // G.., M..:42, M..:43, all three derived from the same keypair by the SDK
+    // so the fixtures encode a real muxed relationship.
+    const G_DESTINATION = 'GAMVMPAABPFYKAXOGUT3FO5TRO4ILT6VYUNAYVGPAYGVGT5TO46R2ZZK';
+    const M_DESTINATION_42 = 'MAMVMPAABPFYKAXOGUT3FO5TRO4ILT6VYUNAYVGPAYGVGT5TO46R2AAAAAAAAAAAFKSQO';
+    const M_DESTINATION_43 = 'MAMVMPAABPFYKAXOGUT3FO5TRO4ILT6VYUNAYVGPAYGVGT5TO46R2AAAAAAAAAAAFOCBO';
+
+    // A muxed invoice is paid by the same sub-account id.
+    const exact = verifyHorizonPayment(
+      input({
+        expected: expected({ destination: M_DESTINATION_42 }),
+        operations: [paymentOp({ to: G_DESTINATION, to_muxed_id: '42' })],
+      })
+    );
+    assert.equal(exact.ok, true);
+
+    // Wrong sub-account id fails even though the base G account matches.
+    const wrongSubaccount = verifyHorizonPayment(
+      input({
+        expected: expected({ destination: M_DESTINATION_43 }),
+        operations: [paymentOp({ to: G_DESTINATION, to_muxed_id: '42' })],
+      })
+    );
+    assert.equal(codeOf(wrongSubaccount), 'DESTINATION_MISMATCH');
+
+    // A base-account invoice is paid by the same base account (no muxed id).
+    const baseInvoice = verifyHorizonPayment(
+      input({
+        expected: expected({ destination: G_DESTINATION }),
+        operations: [paymentOp({ to: G_DESTINATION })],
+      })
+    );
+    assert.equal(baseInvoice.ok, true);
+
+    // A base-account invoice does not silently accept a muxed payment to it.
+    const baseInvoiceMuxedPayment = verifyHorizonPayment(
+      input({
+        expected: expected({ destination: G_DESTINATION }),
+        operations: [paymentOp({ to: G_DESTINATION, to_muxed_id: '42' })],
+      })
+    );
+    assert.equal(codeOf(baseInvoiceMuxedPayment), 'DESTINATION_MISMATCH');
+  });
 });
 
 describe('verifyHorizonPayment — rejections', () => {
@@ -331,11 +488,15 @@ describe('verifyHorizonPayment — rejections', () => {
   });
 
   it('rejects a transaction observed on a different network', () => {
-    const result = verifyHorizonPayment(
+    const resultTestnetVsMainnet = verifyHorizonPayment(
       input({ expected: expected({ network: 'PUBLIC' }), network: 'TESTNET' })
     );
+    assert.equal(codeOf(resultTestnetVsMainnet), 'NETWORK_MISMATCH');
 
-    assert.equal(codeOf(result), 'NETWORK_MISMATCH');
+    const resultMainnetVsTestnet = verifyHorizonPayment(
+      input({ expected: expected({ network: 'TESTNET' }), network: 'PUBLIC' })
+    );
+    assert.equal(codeOf(resultMainnetVsTestnet), 'NETWORK_MISMATCH');
   });
 
   it('skips the network guard when either side is unknown', () => {
@@ -477,6 +638,7 @@ describe('shared contract', () => {
     const clientVerification = require('../../frontend/lib/verification.js');
 
     assert.deepEqual(clientVerification.VERIFICATION_MESSAGES, VERIFICATION_MESSAGES);
+    assert.ok(clientVerification.RECOVERY_ACTIONS, 'client verification must define recovery actions');
   });
 
   it('every rejection code resolves to a non-empty message', () => {

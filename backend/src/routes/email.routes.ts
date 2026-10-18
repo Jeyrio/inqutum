@@ -1,230 +1,199 @@
-import { Router, Request, Response } from 'express';
-import { authenticate, requirePermission, mayAccessSeller } from '../middleware/access-control';
-import { sendSuccess, sendFailure } from '../types/api';
-import type { InvoiceStorage } from '../storage/invoice-storage';
-import { EmailQueueService, emailQueueService } from '../services/email-queue.service';
-import { EmailAntiSpamService, emailAntiSpamService } from '../services/email-anti-spam.service';
+import { Request, Response, Router } from 'express';
+import { z } from 'zod';
+import { sendFailure, sendSuccess } from '../types/api';
+import {
+  EmailDeliveryService,
+  emailDeliveryService,
+  isValidRecipient,
+  type EmailStatus,
+} from '../notifications/email-delivery';
 
 export interface EmailRouterOptions {
-  storage: InvoiceStorage;
-  queueService?: EmailQueueService;
-  antiSpamService?: EmailAntiSpamService;
+  service?: EmailDeliveryService;
+  /** When true, POST /email/webhook accepts unsigned provider callbacks. */
+  allowUnsignedWebhooks?: boolean;
 }
 
-export function createEmailRouter(options: EmailRouterOptions): Router {
+const sendEmailSchema = z.object({
+  to: z.string().min(3),
+  subject: z.string().min(1).max(200),
+  text: z.string().max(20_000).optional(),
+  html: z.string().max(50_000).optional(),
+  replyTo: z.string().optional(),
+  invoiceId: z.string().max(64).optional(),
+  idempotencyKey: z.string().max(200).optional(),
+});
+
+const webhookSchema = z.object({
+  /** Provider message id returned on the original send. */
+  messageId: z.string().min(1),
+  event: z.enum(['bounce', 'complaint', 'delivered']),
+  reason: z.string().max(500).optional(),
+});
+
+/** Failure categories map to stable codes so the UI can give specific advice. */
+const FAILURE_CODES: Record<string, { status: number; code: string; recovery: string }> = {
+  auth: {
+    status: 502,
+    code: 'EMAIL_AUTH_FAILED',
+    recovery: 'The email provider rejected our credentials. A maintainer must fix the provider API key or SMTP username.',
+  },
+  quota: {
+    status: 429,
+    code: 'EMAIL_QUOTA_EXCEEDED',
+    recovery: 'The email provider is rate limiting or out of quota. Try again later or upgrade the sending plan.',
+  },
+  transient: {
+    status: 503,
+    code: 'EMAIL_TRANSIENT_FAILURE',
+    recovery: 'The email provider is temporarily unreachable. Try again in a few minutes.',
+  },
+  invalid_recipient: {
+    status: 400,
+    code: 'EMAIL_INVALID_RECIPIENT',
+    recovery: 'Check the recipient address and try again.',
+  },
+  config: {
+    status: 503,
+    code: 'EMAIL_NOT_CONFIGURED',
+    recovery: 'Email delivery is not configured for this deployment. See docs/EMAIL_DELIVERY.md.',
+  },
+  in_progress: {
+    status: 409,
+    code: 'EMAIL_SEND_IN_PROGRESS',
+    recovery: 'A send with this idempotency key is still running. Retry in a moment to get its result.',
+  },
+  in_doubt: {
+    status: 409,
+    code: 'EMAIL_OUTCOME_IN_DOUBT',
+    recovery:
+      'A previous send stopped before its outcome was recorded. Check the provider log, then resolve the checkpoint (docs/RECOVERY_CHECKPOINTS.md).',
+  },
+  key_reused: {
+    status: 422,
+    code: 'EMAIL_IDEMPOTENCY_KEY_REUSED',
+    recovery: 'This idempotency key was already used for a different email. Use a new key for a new message.',
+  },
+  permanent: {
+    status: 502,
+    code: 'EMAIL_FAILED',
+    recovery: 'The email provider rejected this message. Check the address and content, then try again.',
+  },
+};
+
+/**
+ * Email delivery routes. Mount under `/api`.
+ *
+ *   POST /email/send      send an invoice / proof email, explicit success or failure
+ *   GET  /email/deliveries?to=&status=   delivery log (bounces + complaints included)
+ *   GET  /email/problems  everything not confirmed as sent
+ *   POST /email/webhook   provider bounce / complaint / delivery callback
+ */
+export function createEmailRouter(options: EmailRouterOptions = {}): Router {
+  const service = options.service ?? emailDeliveryService;
   const router = Router();
-  const storage = options.storage;
-  const queue = options.queueService || emailQueueService;
-  const antiSpam = options.antiSpamService || emailAntiSpamService;
 
-  /**
-   * POST /invoices/:id/send-email
-   * Send invoice link to customer / client email.
-   */
-  router.post(
-    '/invoices/:id/send-email',
-    authenticate(),
-    requirePermission('invoice:email'),
-    async (req: Request, res: Response) => {
-      try {
-        const { id } = req.params;
-        const { recipientEmail, subject, text, html } = req.body || {};
-
-        const invoice = await storage.getInvoiceById(id);
-        if (!invoice) {
-          return sendFailure(res, 404, 'Invoice not found');
-        }
-
-        const targetEmail = recipientEmail || invoice.customerEmail;
-        if (!targetEmail) {
-          return sendFailure(res, 400, 'Recipient email is required', 'MISSING_RECIPIENT_EMAIL');
-        }
-
-        const result = await queue.enqueue({
-          invoiceId: invoice.id,
-          recipientEmail: targetEmail,
-          senderWallet: invoice.sellerPublicKey,
-          emailType: 'INVOICE_SENT',
-          subject: subject || `Invoice from ${invoice.sellerName || 'Seller'}: ${invoice.memo}`,
-          payload: {
-            text: text || `You have an invoice for ${invoice.amount} ${invoice.assetCode}. Memo: ${invoice.memo}`,
-            html,
-            invoice,
-          },
-        });
-
-        if (!result.success) {
-          if (result.code === 'EMAIL_RATE_LIMIT_EXCEEDED' || result.code === 'QUOTA_EXCEEDED') {
-            res.set('Retry-After', String(result.retryAfterSeconds || 3600));
-            return res.status(429).json({
-              success: false,
-              code: result.code,
-              error: result.error,
-              retryAfter: result.retryAfterSeconds,
-            });
-          }
-          return sendFailure(res, 400, result.error || 'Failed to queue email', result.code as any);
-        }
-
-        return sendSuccess(res, 202, result.delivery, {
-          message: 'Invoice email queued for delivery',
-        });
-      } catch (error: any) {
-        console.error('Send invoice email error:', error);
-        return sendFailure(res, 500, error.message || 'Failed to send invoice email');
-      }
-    }
-  );
-
-  /**
-   * POST /invoices/:id/send-proof
-   * Send payment proof email for paid invoices.
-   */
-  router.post(
-    '/invoices/:id/send-proof',
-    authenticate(),
-    requirePermission('invoice:email'),
-    async (req: Request, res: Response) => {
-      try {
-        const { id } = req.params;
-        const { recipientEmail, subject, text, html } = req.body || {};
-
-        const invoice = await storage.getInvoiceById(id);
-        if (!invoice) {
-          return sendFailure(res, 404, 'Invoice not found');
-        }
-
-        if (invoice.status !== 'PAID') {
-          return sendFailure(res, 400, 'Payment proof is only available for paid invoices', 'INVOICE_NOT_PAID');
-        }
-
-        const targetEmail = recipientEmail || invoice.payerEmail || invoice.customerEmail || invoice.sellerEmail;
-        if (!targetEmail) {
-          return sendFailure(res, 400, 'Recipient email is required', 'MISSING_RECIPIENT_EMAIL');
-        }
-
-        const result = await queue.enqueue({
-          invoiceId: invoice.id,
-          recipientEmail: targetEmail,
-          senderWallet: invoice.sellerPublicKey,
-          emailType: 'PAYMENT_PROOF',
-          subject: subject || `Payment Receipt: ${invoice.memo}`,
-          payload: {
-            text: text || `Your payment for invoice ${invoice.memo} (${invoice.amount} ${invoice.assetCode}) was confirmed on Stellar. Tx: ${invoice.paymentTxHash}`,
-            html,
-            invoice,
-          },
-        });
-
-        if (!result.success) {
-          if (result.code === 'EMAIL_RATE_LIMIT_EXCEEDED' || result.code === 'QUOTA_EXCEEDED') {
-            res.set('Retry-After', String(result.retryAfterSeconds || 3600));
-            return res.status(429).json({
-              success: false,
-              code: result.code,
-              error: result.error,
-              retryAfter: result.retryAfterSeconds,
-            });
-          }
-          return sendFailure(res, 400, result.error || 'Failed to queue proof email', result.code as any);
-        }
-
-        return sendSuccess(res, 202, result.delivery, {
-          message: 'Payment proof email queued for delivery',
-        });
-      } catch (error: any) {
-        console.error('Send payment proof email error:', error);
-        return sendFailure(res, 500, error.message || 'Failed to send payment proof email');
-      }
-    }
-  );
-
-  /**
-   * GET /invoices/:id/deliveries
-   * Surface email delivery status, attempts, error, and retry visibility to the freelancer.
-   */
-  router.get(
-    '/invoices/:id/deliveries',
-    authenticate(),
-    requirePermission('invoice:deliveries'),
-    async (req: Request, res: Response) => {
-      try {
-        const { id } = req.params;
-        const invoice = await storage.getInvoiceById(id);
-        if (!invoice) {
-          return sendFailure(res, 404, 'Invoice not found');
-        }
-
-        if (!mayAccessSeller(req.actor, 'invoice:deliveries', invoice.sellerPublicKey)) {
-          return sendFailure(res, 403, 'Forbidden: You do not own this invoice', 'FORBIDDEN');
-        }
-
-        const deliveries = await queue.getInvoiceDeliveries(id);
-        return sendSuccess(res, 200, deliveries);
-      } catch (error: any) {
-        console.error('Get invoice deliveries error:', error);
-        return sendFailure(res, 500, error.message || 'Failed to get email deliveries');
-      }
-    }
-  );
-
-  /**
-   * GET /email/circuit-breaker
-   * View email deliverability metrics and circuit breaker status.
-   */
-  router.get(
-    '/email/circuit-breaker',
-    authenticate(),
-    requirePermission('email:admin'),
-    (req: Request, res: Response) => {
-      const metrics = antiSpam.getCircuitBreakerMetrics();
-      return sendSuccess(res, 200, metrics);
-    }
-  );
-
-  /**
-   * POST /email/circuit-breaker/reset
-   * Reset circuit breaker and resume paused queued emails.
-   */
-  router.post(
-    '/email/circuit-breaker/reset',
-    authenticate(),
-    requirePermission('email:admin'),
-    async (req: Request, res: Response) => {
-      antiSpam.resetCircuitBreaker();
-      const resumedCount = await queue.resumePausedEmails();
-      return sendSuccess(res, 200, {
-        isTripped: false,
-        resumedCount,
-      }, {
-        message: `Circuit breaker reset. Resumed ${resumedCount} paused emails.`,
+  router.post('/email/send', async (req: Request, res: Response) => {
+    const parsed = sendEmailSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return sendFailure(res, 400, 'Invalid email request', {
+        code: 'EMAIL_REQUEST_INVALID',
+        correlationId: req.correlationId,
       });
     }
-  );
 
-  /**
-   * POST /email/opt-out & POST /email/report-abuse
-   * Public reporting / block mechanism for recipients of unwanted demo-generated emails (Issue #31).
-   */
-  const handleOptOut = (req: Request, res: Response) => {
-    try {
-      const { email, reason } = req.body || {};
-      if (!email || typeof email !== 'string') {
-        return sendFailure(res, 400, 'Valid recipient email is required to opt out', 'INVALID_EMAIL');
-      }
-      const trimmed = email.trim().toLowerCase();
-      antiSpam.blockEmail(trimmed);
-      return sendSuccess(res, 200, { email: trimmed, blocked: true, reason: reason || 'User requested block' }, {
-        message: 'Email address has been successfully blocked from all future demo notifications.',
+    const body = parsed.data;
+    if (!isValidRecipient(body.to)) {
+      return sendFailure(res, 400, 'Recipient is not a valid email address', {
+        code: 'EMAIL_INVALID_RECIPIENT',
+        correlationId: req.correlationId,
       });
-    } catch (error: any) {
-      console.error('Email opt-out error:', error);
-      return sendFailure(res, 500, error.message || 'Failed to process opt-out');
     }
-  };
 
-  router.post('/email/opt-out', handleOptOut);
-  router.post('/email/report-abuse', handleOptOut);
+    const result = await service.deliver({
+      to: body.to,
+      subject: body.subject,
+      text: body.text,
+      html: body.html,
+      replyTo: body.replyTo,
+      idempotencyKey: body.idempotencyKey ?? (body.invoiceId ? `invoice:${body.invoiceId}` : undefined),
+      metadata: body.invoiceId ? { invoiceId: body.invoiceId } : undefined,
+    });
+
+    // Success is reported explicitly, never implied by a 2xx with no body.
+    if (result.ok) {
+      return sendSuccess(
+        res,
+        200,
+        {
+          status: result.status,
+          deliveryId: result.delivery?.id,
+          providerMessageId: result.delivery?.providerMessageId,
+        },
+        { message: result.message, correlationId: req.correlationId }
+      );
+    }
+
+    const mapping = FAILURE_CODES[result.category ?? 'permanent'] ?? FAILURE_CODES.permanent;
+    return sendFailure(res, mapping.status, result.message ?? 'Email delivery failed', {
+      code: mapping.code,
+      category:
+        result.category === 'quota'
+          ? 'RATE_LIMIT'
+          : result.category === 'in_progress' || result.category === 'in_doubt' || result.category === 'key_reused'
+            ? 'LIFECYCLE'
+            : 'NETWORK',
+      retryable: result.retryable ?? false,
+      recoveryAction: mapping.recovery,
+      correlationId: req.correlationId,
+    });
+  });
+
+  router.get('/email/deliveries', (req: Request, res: Response) => {
+    const status = req.query.status as EmailStatus | undefined;
+    const limit = Number.parseInt(String(req.query.limit ?? '50'), 10);
+    const deliveries = service.listDeliveries({
+      to: req.query.to ? String(req.query.to) : undefined,
+      status,
+      limit: Number.isFinite(limit) ? limit : 50,
+    });
+    return sendSuccess(res, 200, { deliveries, count: deliveries.length }, {
+      correlationId: req.correlationId,
+    });
+  });
+
+  // Bounce / complaint visibility: everything that was not confirmed as sent.
+  router.get('/email/problems', (_req: Request, res: Response) => {
+    const problems = service.listProblems();
+    return sendSuccess(res, 200, { problems, count: problems.length });
+  });
+
+  router.post('/email/webhook', (req: Request, res: Response) => {
+    const parsed = webhookSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return sendFailure(res, 400, 'Invalid webhook payload', {
+        code: 'EMAIL_WEBHOOK_INVALID',
+        correlationId: req.correlationId,
+      });
+    }
+
+    const { messageId, event, reason } = parsed.data;
+    const record =
+      event === 'bounce'
+        ? service.recordBounce(messageId, reason)
+        : event === 'complaint'
+          ? service.recordComplaint(messageId, reason)
+          : service.getStore().findByProviderMessageId(messageId);
+
+    if (!record) {
+      return sendFailure(res, 404, 'No delivery matches that message id', {
+        code: 'EMAIL_DELIVERY_NOT_FOUND',
+        correlationId: req.correlationId,
+      });
+    }
+
+    return sendSuccess(res, 200, { delivery: record }, { correlationId: req.correlationId });
+  });
 
   return router;
 }

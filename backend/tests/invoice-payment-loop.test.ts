@@ -97,11 +97,11 @@ function paymentOn(overrides: {
   to?: string;
   assetType?: string;
   assetCode?: string;
+  txHash?: string;
 }) {
+  const hash = overrides.txHash ?? TX_HASH;
   return (path: string) => {
-    // Match the path instead of comparing it with one constant, so each test
-    // can use its own hash.
-    if (/^\/transactions\/[0-9a-f]{64}\/operations$/.test(path)) {
+    if (path.startsWith(`/transactions/${hash}/operations`)) {
       return {
         status: 200,
         body: {
@@ -122,11 +122,11 @@ function paymentOn(overrides: {
       };
     }
 
-    if (/^\/transactions\/[0-9a-f]{64}$/.test(path)) {
+    if (path.startsWith(`/transactions/${hash}`)) {
       return {
         status: 200,
         body: {
-          hash: path.split('/')[2],
+          hash,
           successful: true,
           ledger: 1_000_000,
           memo: overrides.memo,
@@ -225,11 +225,12 @@ describe('invoice payment loop', () => {
   });
 
   it('stores payer details supplied with the verification', async () => {
+    const tx = 'b'.repeat(64);
     const invoice = await createInvoice(port);
-    horizonResponder = paymentOn({ memo: invoice.memo });
+    horizonResponder = paymentOn({ memo: invoice.memo, txHash: tx });
 
     const verified = await jsonRequest(port, 'POST', `/api/invoices/${invoice.id}/verify`, {
-      txHash: nextTxHash(),
+      txHash: tx,
       payerName: 'Ada Lovelace',
       payerEmail: 'ada@example.com',
     });
@@ -299,16 +300,17 @@ describe('invoice payment loop', () => {
   });
 
   it('refuses a second verification of an already paid invoice', async () => {
+    const tx = 'c'.repeat(64);
     const invoice = await createInvoice(port);
-    horizonResponder = paymentOn({ memo: invoice.memo });
+    horizonResponder = paymentOn({ memo: invoice.memo, txHash: tx });
 
     const first = await jsonRequest(port, 'POST', `/api/invoices/${invoice.id}/verify`, {
-      txHash: nextTxHash(),
+      txHash: tx,
     });
     assert.equal(first.status, 200);
 
     const second = await jsonRequest(port, 'POST', `/api/invoices/${invoice.id}/verify`, {
-      txHash: nextTxHash(),
+      txHash: tx,
     });
 
     assert.equal(second.status, 400);
@@ -354,10 +356,11 @@ describe('invoice payment loop', () => {
   });
 
   it("counts a paid invoice in the seller's stats", async () => {
+    const tx = 'd'.repeat(64);
     const invoice = await createInvoice(port, 12);
-    horizonResponder = paymentOn({ memo: invoice.memo, amount: '12.0000000' });
+    horizonResponder = paymentOn({ memo: invoice.memo, amount: '12.0000000', txHash: tx });
 
-    await jsonRequest(port, 'POST', `/api/invoices/${invoice.id}/verify`, { txHash: nextTxHash() });
+    await jsonRequest(port, 'POST', `/api/invoices/${invoice.id}/verify`, { txHash: tx });
 
     const stats = await jsonRequest(
       port,

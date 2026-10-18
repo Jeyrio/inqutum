@@ -14,6 +14,7 @@ import {
   NETWORK_DISPLAY_NAME,
 } from '@/lib/stellar';
 import { useWalletStore } from '@/lib/store';
+import { EXTERNAL_WINDOW_FEATURES, explorerAccountUrl } from '@/lib/safe-content.js';
 import { paymentMonitor } from '@/lib/payment-monitor';
 import { walletGate } from '@/lib/freighter-availability';
 import { Wallet, LogOut, Loader2, ExternalLink, Bell, BellOff, AlertTriangle } from 'lucide-react';
@@ -148,8 +149,11 @@ export default function WalletConnect({ onConnect }: WalletConnectProps = {}) {
   };
 
   const openExplorer = () => {
-    const net = process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'TESTNET' ? 'testnet' : 'public';
-    window.open(`https://stellar.expert/explorer/${net}/account/${publicKey}`, '_blank');
+    window.open(
+      explorerAccountUrl(process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? '', publicKey),
+      '_blank',
+      EXTERNAL_WINDOW_FEATURES
+    );
   };
 
   if (connected && publicKey) {
@@ -266,13 +270,13 @@ export default function WalletConnect({ onConnect }: WalletConnectProps = {}) {
     >
       {loading ? (
         <>
-          <Loader2 className="w-5 h-5 animate-spin" aria-hidden="true" />
-          <span className="hidden sm:inline">Connecting...</span>
+          <Loader2 className="w-5 h-5 animate-spin" />
+          <span className="sr-only sm:not-sr-only">Connecting...</span>
         </>
       ) : (
         <>
-          <Wallet className="w-5 h-5" aria-hidden="true" />
-          <span className="hidden sm:inline">Connect Wallet</span>
+          <Wallet className="w-5 h-5" />
+          <span className="sr-only sm:not-sr-only">Connect Wallet</span>
         </>
       )}
     </button>

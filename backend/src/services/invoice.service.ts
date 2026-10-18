@@ -4,20 +4,8 @@ import { generateInvoiceMemo } from '../utils/memo';
 import { CreateInvoiceInput } from '../utils/validation';
 import type { InvoiceStats } from '../storage/invoice-stats';
 import { calculateInvoiceExpiry } from '../domain/invoice-expiry';
-import {
-  SettlementTimeUnavailableError,
-  type LatePaymentWarningCode,
-  type SettlementContext,
-} from '../domain/invoice-settlement';
-import {
-  InvalidTransitionError,
-  assertTransition,
-  type InvoiceEvent,
-  type InvoiceStatus,
-} from '../../../shared/invoice-lifecycle';
-import { PaymentClaimError } from '../domain/payment-attribution';
-import type { AuditEvent, MarkAsPaidOptions } from '../storage/invoice-storage';
-import type { ReconciliationInvoice, ReconciliationSettlement } from '../domain/reconciliation';
+import type { InvoiceCursor } from '../storage/invoice-cursor';
+import { ConflictError } from '../concurrency/optimistic-lock';
 
 // PostgreSQL invoice service. Kept behaviourally identical to
 // InvoiceMemoryService so callers that go through the shared InvoiceStorage
@@ -60,6 +48,7 @@ export interface Invoice {
   latePaymentWarningCode?: LatePaymentWarningCode;
   expiresAt: Date;
   metadata?: any;
+  version?: number;
 }
 
 export class InvoiceService {
@@ -81,8 +70,8 @@ export class InvoiceService {
       INSERT INTO invoices (
         id, seller_public_key, seller_name, seller_email, amount,
         asset_code, asset_issuer, memo, description, customer_name,
-        customer_email, status, expires_at, external_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        customer_email, status, expires_at, version
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1)
       RETURNING *
     `;
 
@@ -222,87 +211,42 @@ export class InvoiceService {
     txHash: string,
     payerPublicKey: string,
     payerInfo?: { payerName?: string; payerEmail?: string },
-    options?: MarkAsPaidOptions
+    expectedVersion?: number
   ): Promise<Invoice> {
-    const settledAt = options?.settledAt ?? null;
-    const query = `
-      WITH settled AS (
+    let query: string;
+    let params: any[];
+
+    if (expectedVersion !== undefined) {
+      query = `
         UPDATE invoices
-        SET status = 'PAID',
-            payment_tx_hash = $2,
-            payer_public_key = $3,
-            paid_at = NOW(),
-            payer_name = $4,
-            payer_email = $5,
-            settled_at = COALESCE($6::timestamptz, NOW()),
-            settlement_context = CASE
-              WHEN status = 'CANCELLED' AND $6::timestamptz >= cancelled_at THEN 'AFTER_CANCEL'
-              ELSE 'ON_TIME'
-            END,
-            prior_status = CASE
-              WHEN status = 'CANCELLED' THEN status
-              ELSE NULL
-            END,
-            late_payment_warning_code = CASE
-              WHEN status = 'CANCELLED' AND $6::timestamptz >= cancelled_at THEN 'PAYMENT_RECEIVED_AFTER_CANCEL'
-              ELSE NULL
-            END
-        WHERE id = $1
-          AND (
-            (status = 'PENDING' AND expires_at > NOW())
-            OR (status = 'CANCELLED' AND cancelled_at IS NOT NULL AND $6::timestamptz IS NOT NULL)
-          )
+        SET status = 'PAID', payment_tx_hash = $2, payer_public_key = $3, paid_at = NOW(),
+            payer_name = $4, payer_email = $5, version = version + 1
+        WHERE id = $1 AND status = 'PENDING' AND expires_at > NOW() AND version = $6
         RETURNING *
-      ),
-      payment_event AS (
-        INSERT INTO payment_events (invoice_id, event_type, event_data)
-        SELECT
-          id,
-          'PAYMENT_CONFIRMED',
-          jsonb_strip_nulls(jsonb_build_object(
-            'txHash', $2::text,
-            'payerPublicKey', $3::text,
-            'settledAt', settled_at,
-            'settlementContext', settlement_context,
-            'priorStatus', prior_status,
-            'latePaymentWarningCode', late_payment_warning_code
-          ))
-        FROM settled
-        RETURNING id
-      )
-      SELECT * FROM settled
-    `;
+      `;
+      params = [invoiceId, txHash, payerPublicKey, payerInfo?.payerName || null, payerInfo?.payerEmail || null, expectedVersion];
+    } else {
+      query = `
+        UPDATE invoices
+        SET status = 'PAID', payment_tx_hash = $2, payer_public_key = $3, paid_at = NOW(),
+            payer_name = $4, payer_email = $5, version = version + 1
+        WHERE id = $1 AND status = 'PENDING' AND expires_at > NOW()
+        RETURNING *
+      `;
+      params = [invoiceId, txHash, payerPublicKey, payerInfo?.payerName || null, payerInfo?.payerEmail || null];
+    }
 
     try {
-      const result = await this.db.query(query, [
-        invoiceId,
-        txHash,
-        payerPublicKey,
-        payerInfo?.payerName || null,
-        payerInfo?.payerEmail || null,
-        settledAt,
-      ]);
+      const result = await this.db.query(query, params);
 
       if (result.rows.length === 0) {
-        const existing = await this.db.query('SELECT * FROM invoices WHERE id = $1', [invoiceId]);
-        const row = existing.rows[0];
-        if (!row) {
-          throw new Error('Invoice not found');
+        if (expectedVersion !== undefined) {
+          const check = await this.db.query('SELECT version FROM invoices WHERE id = $1', [invoiceId]);
+          if (check.rows.length > 0) {
+            throw new ConflictError(check.rows[0].version, expectedVersion);
+          }
         }
-        if (row.status === 'CANCELLED' && !settledAt) {
-          throw new SettlementTimeUnavailableError();
-        }
-        // The guarded UPDATE matched nothing, so the invoice is not in a state
-        // that can settle. Ask the lifecycle why, so the refusal is the same
-        // one the memory store gives. A PENDING row that reached this point
-        // has crossed its expiry, which the sweep had not yet recorded.
-        const pastExpiry = row.status === 'PENDING' && new Date(row.expires_at).getTime() <= Date.now();
-        const current: string = pastExpiry ? 'EXPIRED' : row.status;
-        const event: InvoiceEvent = current === 'CANCELLED' ? 'SETTLE_AFTER_CANCEL' : 'SETTLE';
-        assertTransition(current, event);
-        // Unreachable when the lifecycle and the UPDATE's WHERE clause agree;
-        // reaching it means they drifted, which must not pass silently.
-        throw new InvalidTransitionError(current, 'PAID', event);
+        throw new Error('Invoice not found, expired, or already processed');
       }
 
       console.log('✅ Invoice marked as paid:', invoiceId);
@@ -337,7 +281,8 @@ export class InvoiceService {
     sellerPublicKey: string,
     status?: string,
     limit: number = 50,
-    offset: number = 0
+    offset: number = 0,
+    after?: InvoiceCursor
   ): Promise<Invoice[]> {
     if (!sellerPublicKey) {
       throw new Error('Seller public key is required');
@@ -353,7 +298,16 @@ export class InvoiceService {
       params.push(status);
     }
 
-    query += ' ORDER BY created_at DESC LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
+    // created_at is truncated to ms so the cursor (a JS Date) compares exactly.
+    // ponytail: truncation defeats idx_invoices_seller_created_at for the sort; per-seller
+    // lists are small. Add an expression index on date_trunc if a seller reaches ~100k rows.
+    const sortKey = "date_trunc('milliseconds', created_at)";
+    if (after) {
+      query += ` AND (${sortKey}, id) < ($${params.length + 1}::timestamptz, $${params.length + 2}::uuid)`;
+      params.push(after.createdAt.toISOString(), after.id);
+    }
+
+    query += ` ORDER BY ${sortKey} DESC, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
 
     const result = await this.db.query(query, params);
@@ -363,30 +317,40 @@ export class InvoiceService {
   /**
    * Cancel an invoice
    */
-  async cancelInvoice(invoiceId: string, sellerPublicKey?: string): Promise<Invoice> {
+  async cancelInvoice(invoiceId: string, expectedVersion?: number): Promise<Invoice> {
     await this.markExpiredInvoices();
 
-    const query = `
-      UPDATE invoices 
-      SET status = 'CANCELLED', cancelled_at = NOW()
-      WHERE id = $1 AND status = 'PENDING' AND ($2::text IS NULL OR seller_public_key = $2)
-      RETURNING *
-    `;
+    let query: string;
+    let params: any[];
 
-    const result = await this.db.query(query, [invoiceId, sellerPublicKey || null]);
+    if (expectedVersion !== undefined) {
+      query = `
+        UPDATE invoices
+        SET status = 'CANCELLED', version = version + 1
+        WHERE id = $1 AND status = 'PENDING' AND version = $2
+        RETURNING *
+      `;
+      params = [invoiceId, expectedVersion];
+    } else {
+      query = `
+        UPDATE invoices
+        SET status = 'CANCELLED', version = version + 1
+        WHERE id = $1 AND status = 'PENDING'
+        RETURNING *
+      `;
+      params = [invoiceId];
+    }
+
+    const result = await this.db.query(query, params);
 
     if (result.rows.length === 0) {
-      const existing = await this.db.query('SELECT * FROM invoices WHERE id = $1', [invoiceId]);
-      const row = existing.rows[0];
-      if (!row) {
-        throw new Error('Invoice not found');
+      if (expectedVersion !== undefined) {
+        const check = await this.db.query('SELECT version FROM invoices WHERE id = $1', [invoiceId]);
+        if (check.rows.length > 0) {
+          throw new ConflictError(check.rows[0].version, expectedVersion);
+        }
       }
-      if (sellerPublicKey && row.seller_public_key !== sellerPublicKey) {
-        throw new Error('Unauthorized: only the seller can cancel this invoice');
-      }
-      // Same refusal the memory store gives for a cancel the lifecycle forbids.
-      assertTransition(row.status, 'CANCEL');
-      throw new InvalidTransitionError(row.status, 'CANCELLED', 'CANCEL');
+      throw new Error('Invoice not found or already processed');
     }
 
     await this.recordLifecycleEvent(invoiceId, 'INVOICE_CANCELLED', {
@@ -400,6 +364,29 @@ export class InvoiceService {
   /**
    * Mark expired invoices
    */
+  /** Read-only: PENDING rows past expiry that no sweep has transitioned yet. */
+  async findOverduePendingInvoices(
+    cutoff: Date,
+    limit: number
+  ): Promise<{ total: number; invoices: Array<Pick<Invoice, 'id' | 'sellerPublicKey' | 'expiresAt'>> }> {
+    const result = await this.db.query(
+      `SELECT id, seller_public_key, expires_at, COUNT(*) OVER () AS total
+       FROM invoices
+       WHERE status = 'PENDING' AND expires_at <= $1
+       ORDER BY expires_at ASC
+       LIMIT $2`,
+      [cutoff, limit]
+    );
+    return {
+      total: Number(result.rows[0]?.total ?? 0),
+      invoices: result.rows.map((row) => ({
+        id: row.id,
+        sellerPublicKey: row.seller_public_key,
+        expiresAt: new Date(row.expires_at),
+      })),
+    };
+  }
+
   async markExpiredInvoices(now: Date = new Date()): Promise<number> {
     const query = `
       UPDATE invoices 
@@ -426,6 +413,18 @@ export class InvoiceService {
     `;
 
     await this.db.query(query, [invoiceId, eventType, JSON.stringify(eventData)]);
+  }
+
+  async getAllInvoices(filter?: { status?: string }): Promise<Invoice[]> {
+    let query = 'SELECT * FROM invoices';
+    const params: any[] = [];
+    if (filter?.status) {
+      query += ' WHERE status = $1';
+      params.push(filter.status);
+    }
+    query += ' ORDER BY created_at DESC';
+    const result = await this.db.query(query, params);
+    return result.rows.map((row) => this.mapRowToInvoice(row));
   }
 
   /**
@@ -637,6 +636,7 @@ export class InvoiceService {
       latePaymentWarningCode: row.late_payment_warning_code,
       expiresAt: row.expires_at,
       metadata: row.metadata,
+      version: row.version ?? 1,
     };
   }
 

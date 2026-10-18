@@ -1,12 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { LANDING_BULLETS, renderLandingBullets } = require('../lib/landing-feature-bullets');
-const { landingFeatureBulletsFixture } = require('./fixtures/landing-feature-bullets.fixture');
 
-test('landing feature bullets keep the canonical bullet order and copy', () => {
+test('landing feature bullets keeps the canonical bullet order and copy', () => {
   assert.deepEqual(renderLandingBullets(), LANDING_BULLETS);
   assert.deepEqual(
     renderLandingBullets().map(({ n, title }) => ({ n, title })),
-    landingFeatureBulletsFixture,
+    [
+      { n: '01', title: 'Create' },
+      { n: '02', title: 'Get paid' },
+      { n: '03', title: 'Keep proof' },
+    ]
   );
 });

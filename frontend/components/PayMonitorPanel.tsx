@@ -43,12 +43,7 @@ export default function PayMonitorPanel({ active, intervalMs, error, onRetry }: 
   const intervalLabel = intervalMs > 0 ? ` Checking every ${Math.round(intervalMs / 1000)} seconds.` : '';
 
   return (
-    <aside
-      aria-live="polite"
-      className="card flex items-center gap-3"
-      data-monitor-state={active ? 'listening' : 'paused'}
-      aria-label={`Payment monitor: ${active ? 'listening' : 'paused'}`}
-    >
+    <aside aria-live="polite" className="card flex items-center gap-3" data-monitor-state={active ? 'listening' : 'paused'}>
       {active && <Loader2 className="w-4 h-4 animate-spin text-cyan-600" aria-hidden="true" />}
       <div>
         <p className="font-semibold text-gray-900">{copy.title}</p>

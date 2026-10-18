@@ -70,40 +70,93 @@ CREATE TABLE IF NOT EXISTS payment_events (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
--- The Horizon paging token is committed after each operation is handled. A
--- restart therefore resumes after the last completed operation; replay after
--- a crash is safe because invoice settlement and tx_hash are idempotent.
-CREATE TABLE IF NOT EXISTS payment_monitor_checkpoints (
-  account VARCHAR(56) NOT NULL,
-  network VARCHAR(20) NOT NULL,
-  cursor TEXT NOT NULL,
-  ledger BIGINT,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (account, network)
-);
-
--- Idempotency keys (issue #44). One row per (actor, Idempotency-Key): the
--- request fingerprint it was first used for, and the response to replay once
--- that request succeeded. Rows stay past expires_at for a tombstone window so a
--- late retry gets a clear "key expired" error rather than running again.
-CREATE TABLE IF NOT EXISTS idempotency_keys (
-  scope TEXT NOT NULL,
-  key TEXT NOT NULL,
-  request_hash CHAR(64) NOT NULL,
-  status VARCHAR(16) NOT NULL CHECK (status IN ('IN_PROGRESS', 'COMPLETED')),
-  response_status INTEGER,
-  response_body JSONB,
+-- Background jobs (see docs/JOBS.md): durable queue with retry + dead-letter state.
+CREATE TABLE IF NOT EXISTS jobs (
+  id UUID PRIMARY KEY,
+  type VARCHAR(100) NOT NULL,
+  payload JSONB NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued', 'running', 'succeeded', 'dead')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  retry_policy JSONB NOT NULL,
+  run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   locked_until TIMESTAMPTZ,
+  locked_by VARCHAR(100),
+  idempotency_key VARCHAR(255),
+  correlation_id VARCHAR(100),
+  errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+  result JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  expires_at TIMESTAMPTZ NOT NULL,
-  PRIMARY KEY (scope, key)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_key ON jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(run_at) WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at DESC);
+
+-- Recovery checkpoints around external side effects (#289, docs/RECOVERY_CHECKPOINTS.md).
+-- One row per idempotency key: intent is written before the call, outcome after.
+CREATE TABLE IF NOT EXISTS side_effect_checkpoints (
+  key VARCHAR(255) PRIMARY KEY,
+  effect VARCHAR(100) NOT NULL,
+  -- SHA-256 of the request payload: a key reused for another payload is refused.
+  fingerprint VARCHAR(64),
+  state VARCHAR(20) NOT NULL
+    CHECK (state IN ('started', 'succeeded', 'failed', 'in_doubt')),
+  attempt INTEGER NOT NULL DEFAULT 1,
+  result JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_side_effect_checkpoints_open
+  ON side_effect_checkpoints(updated_at) WHERE state IN ('started', 'in_doubt');
+
+-- Resumable record repair checkpoints for orphaned and inconsistent records.
+CREATE TABLE IF NOT EXISTS record_repair_checkpoints (
+  id VARCHAR(64) PRIMARY KEY,
+  status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'running', 'paused', 'completed', 'failed')),
+  phase VARCHAR(50) NOT NULL,
+  cursor TEXT,
+  dry_run BOOLEAN NOT NULL DEFAULT false,
+  batch_size INTEGER NOT NULL DEFAULT 100,
+  phases JSONB NOT NULL DEFAULT '[]'::jsonb,
+  scanned_count INTEGER NOT NULL DEFAULT 0,
+  repaired_count INTEGER NOT NULL DEFAULT 0,
+  skipped_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+  action_log JSONB NOT NULL DEFAULT '[]'::jsonb,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_repair_checkpoints_status
+  ON record_repair_checkpoints(status, updated_at DESC);
 
 -- Wallet alignment: databases created before wallet-scoped sellers still have
 -- the unused users table and invoices.user_id column. Both are dropped here so
 -- re-running the migration converges on the wallet-only schema.
 ALTER TABLE invoices DROP COLUMN IF EXISTS user_id;
 DROP TABLE IF EXISTS users CASCADE;
+
+-- Converge databases created before optimistic concurrency was added.
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+
+-- Converge databases created before invoices carried a caller-supplied external
+-- identifier. Bulk imports (#53) key idempotency on this column: a re-run of
+-- the same file must not create a second invoice for the same source record.
+-- NULL for rows created through the API, which generates its own memo, and NULL
+-- rows are excluded from the unique index so an unbounded number of them can
+-- coexist.
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS external_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_external_id
+  ON invoices(external_id) WHERE external_id IS NOT NULL;
+
+-- Enforce global uniqueness of verified transaction hashes at the database layer (#19).
+-- Excludes NULL payment_tx_hash so multiple unpaid/pending invoices can coexist.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_payment_tx_hash
+  ON invoices(payment_tx_hash) WHERE payment_tx_hash IS NOT NULL;
 
 -- Converge databases created before expiry became an enforced lifecycle.
 UPDATE invoices

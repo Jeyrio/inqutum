@@ -4,6 +4,7 @@ import { useState, useCallback } from 'react';
 import { FileText, Mail, AlertTriangle } from 'lucide-react';
 import PaymentReceipt from './PaymentReceipt';
 import type { PayPageInvoice } from './pay-page.types';
+import { PAY_FOCUS_IDS } from '@/lib/pay-status-a11y';
 
 interface PayProofPanelProps {
   invoice: PayPageInvoice;
@@ -44,7 +45,8 @@ export default function PayProofPanel({ invoice, onDownload, onEmail, onError }:
   const canEmail = invoice.customerEmail && invoice.status === 'PAID';
 
   return (
-    <section aria-label="Payment proof" className="space-y-4">
+    // tabIndex -1: receives focus programmatically when a payment settles and the pay controls unmount.
+    <section id={PAY_FOCUS_IDS.proof} tabIndex={-1} aria-label="Payment proof" className="space-y-4">
       <PaymentReceipt invoice={invoice} />
 
       {(downloadError || emailError) && (
@@ -58,22 +60,10 @@ export default function PayProofPanel({ invoice, onDownload, onEmail, onError }:
       )}
 
       <div className="card flex gap-2 print:hidden">
-        <button
-          type="button"
-          onClick={handleDownloadClick}
-          className="btn btn-primary flex-1 flex items-center justify-center gap-2"
-          aria-label="Download payment proof"
-        >
+        <button type="button" onClick={onDownload} className="btn btn-primary flex-1 flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2" aria-label="Download Payment Proof PDF" aria-haspopup="dialog">
           <FileText className="w-4 h-4" aria-hidden="true" /> Download Proof
         </button>
-        <button
-          type="button"
-          onClick={handleEmailClick}
-          disabled={!canEmail}
-          aria-disabled={!canEmail}
-          aria-label={canEmail ? 'Email payment proof' : 'Email not available for this invoice'}
-          className="btn btn-outline px-4"
-        >
+        <button type="button" onClick={onEmail} disabled={!invoice.customerEmail} className="btn btn-outline px-4" aria-label="Email proof">
           <Mail className="w-4 h-4" aria-hidden="true" />
         </button>
       </div>

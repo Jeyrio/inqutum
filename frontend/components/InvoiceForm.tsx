@@ -10,10 +10,19 @@ import { NETWORK_DISPLAY_NAME } from '@/lib/stellar';
 import { showFreighterWrongNetworkPrompt } from './FreighterInstallPrompt';
 import AssetLogo from './AssetLogo';
 import ApiErrorState from './ApiErrorState';
-import { useWalletStore } from '@/lib/store';
-import { walletGate } from '@/lib/freighter-availability';
-import { EXPECTED_WALLET_NETWORK } from '@/lib/stellar';
-import { showFreighterInstallPrompt } from './FreighterInstallPrompt';
+import {
+  firstInvalidField,
+  validateInvoiceForm,
+  type InvoiceFormErrors,
+  type InvoiceFormField,
+} from '@/lib/invoice-form-validation';
+import { validateCreateInvoiceInput } from '@/lib/invoice-form-contract';
+
+const FIELD_IDS: Record<InvoiceFormField, string> = {
+  amount: 'invoice-amount',
+  sellerEmail: 'invoice-seller-email',
+  customerEmail: 'invoice-customer-email',
+};
 
 interface InvoiceFormProps {
   onSuccess?: (invoice: any) => void;
@@ -32,59 +41,63 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
   const [customerEmail, setCustomerEmail] = useState('');
   const [apiError, setApiError] = useState<string | null>(null);
   const [expiresInDays, setExpiresInDays] = useState(7);
-  const { isWrongNetwork } = useWalletStore();
+  const [errors, setErrors] = useState<InvoiceFormErrors>({});
+
+  /** aria wiring for a validated field: marks it invalid and links its error text. */
+  const errorProps = (field: InvoiceFormField, hintId?: string) => {
+    const describedBy = [errors[field] ? `${FIELD_IDS[field]}-error` : null, hintId]
+      .filter(Boolean)
+      .join(' ');
+    return {
+      id: FIELD_IDS[field],
+      'aria-invalid': Boolean(errors[field]),
+      'aria-describedby': describedBy || undefined,
+    };
+  };
+
+  const fieldError = (field: InvoiceFormField) =>
+    errors[field] ? (
+      <p id={`${FIELD_IDS[field]}-error`} className="field-error">
+        {errors[field]}
+      </p>
+    ) : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
 
-    const sellerWallet = userWallet || publicKey || undefined;
-    const gate = walletGate(
-      { freighterAvailable, connected, publicKey: sellerWallet, network },
-      EXPECTED_WALLET_NETWORK
+    const selectedAsset = getAssetByCode(assetCode);
+    const validation = validateCreateInvoiceInput(
+      {
+        amount,
+        assetCode,
+        assetIssuer: selectedAsset?.issuer,
+        expiresInDays,
+        sellerName,
+        sellerEmail,
+        customerName,
+        customerEmail,
+        description,
+      },
+      userWallet
     );
-    if (!gate.ready) {
-      showFreighterInstallPrompt(gate);
-      return;
-    }
 
-    if (isWrongNetwork) {
-      showFreighterWrongNetworkPrompt(NETWORK_DISPLAY_NAME);
-      return;
-    }
-
-    if (!amount || parseFloat(amount) <= 0) {
-      toast.error('Enter a valid amount');
-      return;
-    }
-
-    if (customerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
-      toast.error('Enter a valid client email');
-      return;
-    }
-
-    if (sellerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sellerEmail)) {
-      toast.error('Enter a valid email for yourself');
+    if (!validation.ok) {
+      if (validation.walletError) {
+        toast.error(validation.walletError);
+        return;
+      }
+      setErrors(validation.errors as InvoiceFormErrors);
+      if (validation.firstInvalid && validation.firstInvalid in FIELD_IDS) {
+        document.getElementById(FIELD_IDS[validation.firstInvalid as InvoiceFormField])?.focus();
+      }
       return;
     }
 
     setLoading(true);
     setApiError(null);
     try {
-      const selectedAsset = getAssetByCode(assetCode);
-      // Creates a pending invoice owned by the connected seller wallet
-      const result = await invoiceApi.create({
-        amount: parsedAmount,
-        assetCode: assetCode,
-        assetIssuer: selectedAsset?.issuer,
-        expiresInDays,
-        sellerPublicKey: sellerWallet,
-        network: EXPECTED_WALLET_NETWORK,
-        sellerName: sellerName.trim() || undefined,
-        sellerEmail: sellerEmail.trim() || undefined,
-        description: description || undefined,
-        customerName: customerName.trim() || undefined,
-        customerEmail: customerEmail.trim() || undefined,
-      });
+      const result = await invoiceApi.create(validation.payload);
 
       toast.success('Invoice created');
       onSuccess?.(result.data);
@@ -96,6 +109,7 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
       setCustomerName('');
       setCustomerEmail('');
       setExpiresInDays(7);
+      setErrors({});
     } catch (error: any) {
       const message = apiErrorMessage(error, 'Failed to create invoice');
       if (isApiUnavailableError(error)) setApiError(message);
@@ -106,40 +120,10 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
   };
 
   return (
-    /*
-     * Every control below is associated with a visible `<label htmlFor>`. They
-     * previously relied on an adjacent unassociated `<label>` plus a
-     * `placeholder`, which axe accepts as a name but which disappears the moment
-     * the field has a value — leaving a screen-reader user editing an unnamed
-     * box. The asset `<select>` had neither, and failed axe's `select-name`
-     * outright.
-     */
-    <form onSubmit={handleSubmit} className="space-y-4" aria-labelledby="invoice-form-heading">
-      <h3 id="invoice-form-heading" className="sr-only">
-        Invoice details
-      </h3>
-
-      {isWrongNetwork && (
-        <div
-          role="alert"
-          className="p-3 bg-amber-50 border border-amber-300 rounded-lg flex items-start gap-2.5 text-xs text-amber-900"
-        >
-          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
-          <div>
-            <p className="font-semibold">Wrong Stellar Network</p>
-            <p className="mt-0.5 text-amber-800">
-              Your wallet is connected to a different network. Please switch to {NETWORK_DISPLAY_NAME} in Freighter before creating invoices.
-            </p>
-          </div>
-        </div>
-      )}
-
+    <form onSubmit={handleSubmit} className="space-y-4" noValidate>
       {apiError && <ApiErrorState message={apiError} compact />}
       <div>
-        <label htmlFor="invoice-amount" className="label">
-          Invoice amount <span aria-hidden="true">*</span>
-          <span className="sr-only">(required)</span>
-        </label>
+        <label className="label" htmlFor={FIELD_IDS.amount}>Invoice Amount *</label>
         <div className="flex gap-3 flex-col sm:flex-row">
           <input
             id="invoice-amount"
@@ -151,6 +135,7 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
             aria-required="true"
             aria-describedby="invoice-amount-hint"
             className="input flex-1 text-2xl font-semibold"
+            {...errorProps('amount')}
             placeholder="10.00"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
@@ -160,8 +145,7 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
               Asset
             </label>
             <select
-              id="invoice-asset"
-              name="assetCode"
+              aria-label="Asset"
               value={assetCode}
               onChange={(e) => setAssetCode(e.target.value)}
               className="input w-full sm:w-40 text-sm font-semibold pl-12 pr-3 appearance-none cursor-pointer"
@@ -182,20 +166,13 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
             </div>
           </div>
         </div>
-        <p id="invoice-amount-hint" className="field-hint">
-          {assetCode === 'USDC'
-            ? 'The amount your client pays in USDC (requires a USDC trustline on Stellar).'
-            : 'The amount your client pays, in the selected asset.'}
-        </p>
+        {fieldError('amount')}
       </div>
 
       <div>
-        <label htmlFor="invoice-description" className="label">
-          Description
-        </label>
+        <label className="label" htmlFor="invoice-description">Description</label>
         <textarea
           id="invoice-description"
-          name="description"
           className="input min-h-[80px] resize-none text-sm"
           placeholder="What is this invoice for?"
           value={description}
@@ -208,6 +185,7 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
         <label className="label" htmlFor="invoice-expiry">Payment window</label>
         <select
           id="invoice-expiry"
+          aria-describedby="invoice-expiry-hint"
           className="input w-full text-sm"
           value={expiresInDays}
           onChange={(event) => setExpiresInDays(Number(event.target.value))}
@@ -218,19 +196,16 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
             </option>
           ))}
         </select>
-        <p className="text-xs text-gray-500 mt-1">
+        <p id="invoice-expiry-hint" className="text-xs text-gray-500 mt-1">
           After this window the invoice stays in history but cannot be paid or verified.
         </p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label htmlFor="seller-name" className="label">
-            Your name (optional)
-          </label>
+          <label className="label" htmlFor="invoice-seller-name">Your name (optional)</label>
           <input
-            id="seller-name"
-            name="sellerName"
+            id="invoice-seller-name"
             type="text"
             autoComplete="name"
             className="input text-sm"
@@ -242,30 +217,27 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
         </div>
 
         <div>
-          <label htmlFor="seller-email" className="label">
-            Your email (optional)
-          </label>
+          <label className="label" htmlFor={FIELD_IDS.sellerEmail}>Your email (optional)</label>
           <input
             id="seller-email"
             name="sellerEmail"
             type="email"
             autoComplete="email"
             className="input text-sm"
+            {...errorProps('sellerEmail')}
             placeholder="you@example.com"
             value={sellerEmail}
             onChange={(e) => setSellerEmail(e.target.value)}
             maxLength={255}
           />
+          {fieldError('sellerEmail')}
         </div>
       </div>
 
       <div>
-        <label htmlFor="customer-name" className="label">
-          Client name (optional)
-        </label>
+        <label className="label" htmlFor="invoice-customer-name">Client name (optional)</label>
         <input
-          id="customer-name"
-          name="customerName"
+          id="invoice-customer-name"
           type="text"
           className="input text-sm"
           placeholder="Client or company name"
@@ -276,21 +248,21 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
       </div>
 
       <div>
-        <label htmlFor="customer-email" className="label">
-          Client email (optional)
-        </label>
+        <label className="label" htmlFor={FIELD_IDS.customerEmail}>Client email (optional)</label>
         <input
           id="customer-email"
           name="customerEmail"
           type="email"
           aria-describedby="customer-email-hint"
           className="input text-sm"
-          placeholder="client@example.com"
+          {...errorProps('customerEmail', 'invoice-customer-email-hint')}
+          placeholder="client@example.com — for sending the invoice"
           value={customerEmail}
           onChange={(e) => setCustomerEmail(e.target.value)}
           maxLength={255}
         />
-        <p id="customer-email-hint" className="field-hint">
+        {fieldError('customerEmail')}
+        <p id="invoice-customer-email-hint" className="text-xs text-gray-500 mt-1">
           Used only to send the invoice or payment proof. Not required to create an invoice.
         </p>
       </div>
@@ -303,7 +275,7 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
       >
         {loading ? (
           <>
-            <Loader2 className="w-5 h-5 animate-spin" aria-hidden="true" />
+            <Loader2 className="w-5 h-5 animate-spin" aria-hidden />
             Creating...
           </>
         ) : (

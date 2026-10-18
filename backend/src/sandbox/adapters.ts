@@ -1,76 +1,72 @@
-export type AdapterCode =
-  | 'ADAPTER_SUCCESS'
-  | 'ADAPTER_INVALID_CONFIG'
-  | 'ADAPTER_NOT_SUPPORTED'
-  | 'ADAPTER_UNAVAILABLE';
+/**
+ * Sandbox adapter (issue #81): a fake Horizon that returns canned,
+ * deterministic responses. Nothing here opens a socket or reads a key.
+ */
+import {
+  checkTxHash,
+  failure,
+  verifyHorizonPayment,
+} from '../services/payment-verification';
+import type { ExpectedPayment, VerificationResult, VerifiedPayment } from '../services/payment-verification';
+import { SANDBOX_TRANSACTIONS, SANDBOX_TX_HASHES } from './fixtures';
+import type { SandboxTransaction } from './fixtures';
 
-export type AdapterResult<T> =
-  | { ok: true; code: 'ADAPTER_SUCCESS'; data: T }
-  | { ok: false; code: Exclude<AdapterCode, 'ADAPTER_SUCCESS'>; message: string; recoverable: boolean };
-
-export interface AdapterConfig {
-  type: string;
-  endpoint?: string;
-  timeout?: number;
+export class SandboxConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SandboxConfigError';
+  }
 }
 
-export interface AdapterProvider {
-  isAvailable(): Promise<boolean>;
-  execute<T>(operation: string, payload: unknown): Promise<T>;
+export function isSandboxMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.INQUTUM_SANDBOX === 'true';
 }
 
-const supportedAdapters = new Set(['http', 'memory', 'database']);
+/**
+ * Refuses to start a sandbox that is pointed at mainnet or holds a real
+ * secret, so a stray env file cannot turn a test run into a live one.
+ */
+export function assertSandboxSafe(env: NodeJS.ProcessEnv = process.env): void {
+  if ((env.STELLAR_NETWORK || 'TESTNET').toUpperCase() === 'PUBLIC') {
+    throw new SandboxConfigError('Sandbox mode cannot run with STELLAR_NETWORK=PUBLIC');
+  }
+  if (env.SELLER_SECRET_KEY) {
+    throw new SandboxConfigError('Sandbox mode must not be given SELLER_SECRET_KEY');
+  }
+}
 
-export async function createAdapter(config: AdapterConfig): Promise<AdapterResult<AdapterProvider>> {
-  if (!config.type) {
-    return {
-      ok: false,
-      code: 'ADAPTER_INVALID_CONFIG',
-      message: 'Adapter type is required.',
-      recoverable: false,
-    };
+export class SandboxHorizon {
+  private readonly transactions = new Map<string, SandboxTransaction>();
+
+  constructor() {
+    for (const [scenario, record] of Object.entries(SANDBOX_TRANSACTIONS)) {
+      this.transactions.set(SANDBOX_TX_HASHES[scenario as keyof typeof SANDBOX_TRANSACTIONS], record);
+    }
   }
 
-  if (!supportedAdapters.has(config.type)) {
-    return {
-      ok: false,
-      code: 'ADAPTER_NOT_SUPPORTED',
-      message: `Adapter type '${config.type}' is not supported.`,
-      recoverable: false,
-    };
+  /** Same shape and failure mode as StellarService.getTransaction. */
+  async getTransaction(txHash: string): Promise<SandboxTransaction> {
+    const record = this.transactions.get(txHash.toLowerCase());
+    if (!record) throw new Error(`Transaction not found: ${txHash}`);
+    return structuredClone(record);
   }
 
-  try {
-    const provider = buildAdapterProvider(config);
-    const isAvailable = await provider.isAvailable();
+  /** Mirrors StellarService.verifyPayment, backed by the fixtures instead of Horizon. */
+  async verifyPayment(
+    txHash: string,
+    expected: ExpectedPayment,
+    network = 'TESTNET'
+  ): Promise<VerificationResult<VerifiedPayment>> {
+    const hashCheck = checkTxHash(txHash);
+    if (!hashCheck.ok) return hashCheck;
 
-    if (!isAvailable) {
-      return {
-        ok: false,
-        code: 'ADAPTER_UNAVAILABLE',
-        message: `Adapter '${config.type}' is not available.`,
-        recoverable: true,
-      };
+    let details: SandboxTransaction;
+    try {
+      details = await this.getTransaction(hashCheck.value);
+    } catch {
+      return failure('TRANSACTION_NOT_FOUND');
     }
 
-    return { ok: true, code: 'ADAPTER_SUCCESS', data: provider };
-  } catch {
-    return {
-      ok: false,
-      code: 'ADAPTER_UNAVAILABLE',
-      message: `Failed to initialize adapter '${config.type}'.`,
-      recoverable: true,
-    };
+    return verifyHorizonPayment({ txHash: hashCheck.value, expected, network, ...details });
   }
-}
-
-function buildAdapterProvider(config: AdapterConfig): AdapterProvider {
-  return {
-    async isAvailable() {
-      return true;
-    },
-    async execute<T>(_operation: string, _payload: unknown): Promise<T> {
-      throw new Error('Adapter not implemented');
-    },
-  };
 }

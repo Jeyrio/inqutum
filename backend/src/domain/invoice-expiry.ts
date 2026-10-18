@@ -6,7 +6,7 @@ const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 /** Keep every invoice creation path on the same, bounded expiry contract. */
 export function validateInvoiceExpiryDays(value: unknown): number {
-  const days = value ?? DEFAULT_INVOICE_EXPIRY_DAYS;
+  const days = value === undefined || value === null ? DEFAULT_INVOICE_EXPIRY_DAYS : value;
 
   if (
     typeof days !== 'number' ||
@@ -26,13 +26,16 @@ export function calculateInvoiceExpiry(
   expiresInDays: unknown,
   now: Date = new Date()
 ): Date {
-  return new Date(now.getTime() + validateInvoiceExpiryDays(expiresInDays) * DAY_IN_MS);
+  const validNow = now instanceof Date && !isNaN(now.getTime()) ? now : new Date();
+  return new Date(validNow.getTime() + validateInvoiceExpiryDays(expiresInDays) * DAY_IN_MS);
 }
 
 export function isPendingInvoiceExpired(
-  invoice: { status: string; expiresAt: Date | string },
+  invoice: { status?: string; expiresAt?: Date | string | null } | null | undefined,
   now: Date = new Date()
 ): boolean {
+  if (!invoice || !invoice.expiresAt) return false;
+  const validNow = now instanceof Date && !isNaN(now.getTime()) ? now : new Date();
   const expiresAt = new Date(invoice.expiresAt).getTime();
-  return invoice.status === 'PENDING' && Number.isFinite(expiresAt) && expiresAt <= now.getTime();
+  return invoice.status === 'PENDING' && Number.isFinite(expiresAt) && expiresAt <= validNow.getTime();
 }

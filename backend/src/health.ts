@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { deploymentReadiness, simulationAllowed } from './config/runtime';
 import { STELLAR_NETWORK } from './config/stellar';
+import { featureFlagSnapshot } from './config/feature-flags';
 
 export function healthPayload(storage: string) {
   return {
@@ -10,6 +11,7 @@ export function healthPayload(storage: string) {
     storage,
     network: STELLAR_NETWORK,
     simulationEnabled: simulationAllowed(),
+    features: featureFlagSnapshot(),
     timestamp: new Date().toISOString(),
   };
 }

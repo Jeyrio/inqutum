@@ -3,16 +3,14 @@
 import { useState, useRef, useEffect } from 'react';
 import { User, LogOut, Wallet, ChevronDown } from 'lucide-react';
 import { useWalletStore } from '@/lib/store';
-import { NETWORK_DISPLAY_NAME } from '@/lib/stellar';
-import { initialsFromAddress } from '@/lib/wallet-initials';
-import { networkLabel } from '@/lib/freighter-availability';
+import { Boundary } from './Boundary';
 
 interface UserProfileProps {
   userWallet: string | null;
   onDisconnect?: () => void;
 }
 
-export default function UserProfile({ userWallet, onDisconnect }: UserProfileProps) {
+function UserProfile({ userWallet, onDisconnect }: UserProfileProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -157,5 +155,13 @@ export default function UserProfile({ userWallet, onDisconnect }: UserProfilePro
         </div>
       )}
     </div>
+  );
+}
+
+export default function BoundaryWrappedUserProfile(props: UserProfileProps) {
+  return (
+    <Boundary name="UserProfile" fallbackMessage="Profile unavailable">
+      <UserProfile {...props} />
+    </Boundary>
   );
 }

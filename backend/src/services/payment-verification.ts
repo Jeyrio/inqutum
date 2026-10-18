@@ -10,15 +10,18 @@
  * Horizon and hand them in. See README.md "Payment verification contract".
  */
 
+import * as StellarSdk from '@stellar/stellar-sdk';
 import {
   assetsMatch,
   formatAssetIdentity,
   resolveInvoiceAsset,
   resolvePaymentAsset,
 } from '../utils/asset-helpers';
+import { sanitizePlainText } from '../security/content-safety';
 import { amountsMatch as stroopAmountsMatch } from '../utils/verify-amount-tolerance';
-import { parseSettlementTime } from '../domain/invoice-settlement';
-import { horizonMemo, memosMatch, type MemoType } from '../utils/memo-compare';
+import { isFeatureEnabled } from '../config/feature-flags';
+
+export const VERIFICATION_CONTRACT_VERSION = '1.0.0';
 
 import {
   messageForCode,
@@ -51,7 +54,8 @@ export type VerificationResult<T> = VerificationSuccess<T> | VerificationFailure
 /** Amount precision used by Stellar (7 decimal places). */
 export const STROOP_PRECISION = 7;
 const MAX_PAYER_FIELD_LENGTH = 255;
-const PAYER_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Conservative allow-list: no markup, quotes, `?`/`&`/`%` (mailto/query injection) or whitespace.
+const PAYER_EMAIL_PATTERN = /^[A-Za-z0-9._+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$/;
 const TX_HASH_PATTERN = /^[0-9a-f]{64}$/i;
 
 export function failure(code: VerificationCode): VerificationFailure {
@@ -93,7 +97,7 @@ export function checkPayerInfo(input: PayerInfo | Record<string, any>): Verifica
     return failure('INVALID_PAYER_EMAIL');
   }
 
-  const normalizedPayerName = payerName?.trim() || undefined;
+  const normalizedPayerName = (payerName !== undefined && sanitizePlainText(payerName)) || undefined;
   const normalizedPayerEmail = payerEmail?.trim() || undefined;
 
   if (normalizedPayerEmail && !PAYER_EMAIL_PATTERN.test(normalizedPayerEmail)) {
@@ -145,7 +149,8 @@ export interface ExpectedPayment {
 export interface HorizonTransactionLike {
   memo?: string | null;
   memo_type?: string | null;
-  created_at?: string | null;
+  envelope_type?: string | null;
+  inner_transaction?: HorizonTransactionLike | null;
 }
 
 export interface HorizonOperationLike {
@@ -156,102 +161,7 @@ export interface HorizonOperationLike {
   asset_type?: string;
   asset_code?: string;
   asset_issuer?: string;
-  dest_amount?: string;
-  dest_asset_type?: string;
-  dest_asset_code?: string;
-  dest_asset_issuer?: string;
-  source_amount?: string;
-  source_asset_type?: string;
-  source_asset_code?: string;
-  source_asset_issuer?: string;
-}
-
-export interface NormalizedPaymentOperation {
-  type: string;
-  from: string;
-  to: string;
-  amount: string;
-  assetType: string;
-  assetCode?: string;
-  assetIssuer?: string;
-}
-
-/**
- * Normalizes payment-delivering Horizon operations including standard and path payments.
- *
- * @param operation - Raw Horizon operation.
- * @returns Normalized payment details, or null if operation is not a supported payment shape.
- */
-export function normalizePaymentOperation(
-  operation: HorizonOperationLike,
-): NormalizedPaymentOperation | null {
-  if (operation.type === 'payment') {
-    return {
-      type: 'payment',
-      from: operation.from ?? '',
-      to: operation.to ?? '',
-      amount: operation.amount ?? '',
-      assetType: operation.asset_type ?? 'native',
-      assetCode: operation.asset_code,
-      assetIssuer: operation.asset_issuer,
-    };
-  }
-
-  if (operation.type === 'path_payment_strict_receive') {
-    return {
-      type: 'path_payment_strict_receive',
-      from: operation.from ?? '',
-      to: operation.to ?? '',
-      amount: operation.amount ?? '',
-      assetType: operation.asset_type ?? 'native',
-      assetCode: operation.asset_code,
-      assetIssuer: operation.asset_issuer,
-    };
-  }
-
-  if (operation.type === 'path_payment_strict_send') {
-    return {
-      type: 'path_payment_strict_send',
-      from: operation.from ?? '',
-      to: operation.to ?? '',
-      amount: operation.dest_amount ?? operation.amount ?? '',
-      assetType: operation.dest_asset_type ?? operation.asset_type ?? 'native',
-      assetCode: operation.dest_asset_code ?? operation.asset_code,
-      assetIssuer: operation.dest_asset_issuer ?? operation.asset_issuer,
-    };
-  }
-
-  return null;
-}
-
-/**
- * Finds the payment-delivering operation for an invoice.
- * If destination is given, prioritizes an operation paying that destination.
- *
- * @param operations - List of operations from Horizon.
- * @param destination - Target payment destination.
- * @returns Normalized payment operation or null.
- */
-export function findPaymentOperation(
-  operations: HorizonOperationLike[],
-  destination?: string,
-): NormalizedPaymentOperation | null {
-  const candidates = (operations || [])
-    .map(normalizePaymentOperation)
-    .filter((op): op is NormalizedPaymentOperation => op !== null);
-
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  if (destination) {
-    const match = candidates.find((op) => op.to === destination);
-    if (match) {
-      return match;
-    }
-  }
-
-  return candidates[0];
+  to_muxed_id?: string | number;
 }
 
 export interface VerifiedPayment {
@@ -282,15 +192,59 @@ export function transactionSettlementTime(transaction: HorizonTransactionLike): 
   return parseSettlementTime(transaction?.created_at) ?? undefined;
 }
 
+/**
+ * Invoice destinations are exact Stellar addresses. Muxed addresses retain
+ * their sub-account id; a base G address never matches an M address.
+ */
+export function normalizeDestination(destination: unknown, muxedId?: unknown): string {
+  if (typeof destination !== 'string') return '';
+  const normalized = destination.trim();
+  // An M address carries its own sub-account id in the string itself.
+  if (normalized.startsWith('M')) {
+    return normalized;
+  }
+  if (muxedId === undefined || muxedId === null || String(muxedId).trim() === '') {
+    return normalized;
+  }
+  if (normalized.startsWith('G')) {
+    try {
+      const muxed = new StellarSdk.MuxedAccount(
+        new StellarSdk.Account(normalized, '0'),
+        String(muxedId),
+      );
+      return muxed.accountId();
+    } catch {
+      // Preserve a deterministic non-match for malformed fixture data.
+      return `${normalized}:${String(muxedId).trim()}`;
+    }
+  }
+  return `${normalized}:${String(muxedId).trim()}`;
+}
+
+function transactionForVerification(transaction: HorizonTransactionLike): HorizonTransactionLike {
+  return transaction?.envelope_type === 'fee_bump'
+    ? transaction.inner_transaction ?? transaction
+    : transaction;
+}
+
+/**
+ * Exact stroop match unless the `paymentAmountTolerance` flag is on, which
+ * widens the window to ±1 stroop. Checked server-side on every verification.
+ */
 export function amountsMatch(actual: unknown, expected: string | number): boolean {
-  return stroopAmountsMatch(expected, actual, 0);
+  const toleranceStroops = isFeatureEnabled('paymentAmountTolerance') ? 1 : 0;
+  return stroopAmountsMatch(expected, actual, toleranceStroops);
 }
 
 /**
  * Verify a Horizon transaction against what an invoice expects.
  *
- * Checks run in a fixed order so every caller reports the same first failure:
- * tx hash, network, payment operation, memo, destination, amount, asset.
+ * Policy: any plain `payment` operation that matches the invoice settles it;
+ * unrelated operations are ignored. Path payments are never accepted. Fee-bump
+ * envelopes use the inner transaction for memo and operations, while the hash
+ * supplied by the caller (the outer transaction hash) is persisted.
+ * Checks run in a fixed order: tx hash, network, payment operation, memo,
+ * destination, amount, asset.
  */
 export function verifyHorizonPayment(input: VerifyPaymentInput): VerificationResult<VerifiedPayment> {
   const hashCheck = checkTxHash(input.txHash);
@@ -298,14 +252,15 @@ export function verifyHorizonPayment(input: VerifyPaymentInput): VerificationRes
     return hashCheck;
   }
 
-  const { expected, transaction, operations, network } = input;
+  const { expected, operations, network } = input;
+  const transaction = transactionForVerification(input.transaction);
 
   if (expected.network && network && expected.network !== network) {
     return failure('NETWORK_MISMATCH');
   }
 
-  const paymentOp = findPaymentOperation(operations, expected.destination);
-  if (!paymentOp) {
+  const paymentOps = (operations || []).filter((operation) => operation.type === 'payment');
+  if (paymentOps.length === 0) {
     return failure('NO_PAYMENT_OPERATION');
   }
 
@@ -315,11 +270,21 @@ export function verifyHorizonPayment(input: VerifyPaymentInput): VerificationRes
     return failure('MEMO_MISMATCH');
   }
 
-  if (paymentOp.to !== expected.destination) {
+  const destinationMatch = paymentOps.find((operation) =>
+    normalizeDestination(operation.to, operation.to_muxed_id) ===
+      normalizeDestination(expected.destination)
+  );
+  if (!destinationMatch) {
     return failure('DESTINATION_MISMATCH');
   }
 
-  if (!amountsMatch(paymentOp.amount, expected.amount)) {
+  const amountMatch = paymentOps.find(
+    (operation) =>
+      normalizeDestination(operation.to, operation.to_muxed_id) ===
+        normalizeDestination(expected.destination) &&
+      amountsMatch(operation.amount, expected.amount),
+  );
+  if (!amountMatch) {
     return failure('AMOUNT_MISMATCH');
   }
 
@@ -327,6 +292,25 @@ export function verifyHorizonPayment(input: VerifyPaymentInput): VerificationRes
     assetCode: expected.assetCode,
     assetIssuer: expected.assetIssuer,
   });
+  const assetMatch = paymentOps.find(
+    (operation) =>
+      normalizeDestination(operation.to, operation.to_muxed_id) ===
+        normalizeDestination(expected.destination) &&
+      amountsMatch(operation.amount, expected.amount) &&
+      assetsMatch(
+        invoiceAsset,
+        resolvePaymentAsset({
+          assetType: operation.asset_type,
+          assetCode: operation.asset_code,
+          assetIssuer: operation.asset_issuer,
+        }),
+      ),
+  );
+  if (!assetMatch) {
+    return failure('ASSET_MISMATCH');
+  }
+
+  const paymentOp = assetMatch;
   const paidAsset = resolvePaymentAsset({
     assetType: paymentOp.assetType,
     assetCode: paymentOp.assetCode,

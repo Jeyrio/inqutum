@@ -10,32 +10,13 @@ import { toast } from 'sonner';
 import type { PayPageInvoice } from './pay-page.types';
 import { buildHorizonTxUrl } from '@/lib/explorer-tx-link';
 import { getExplorerTransactionUrl } from '@/lib/stellar';
-// The receipt renders a settled (paid / expired / cancelled) record. It shares
-// the same status vocabulary as PaymentStatus and the verification rejection
-// table, so the proof view and the pay page never disagree on wording.
+import { Boundary } from './Boundary';
 
 interface PaymentReceiptProps {
   invoice: PayPageInvoice;
 }
 
-function latePaymentWarning(invoice: PayPageInvoice): { title: string; body: string } | null {
-  if (invoice.latePaymentWarningCode === 'PAYMENT_RECEIVED_AFTER_CANCEL') {
-    return {
-      title: 'Payment received after cancellation',
-      body: 'This transaction proves funds reached the seller. Contact the seller to reconcile the payment.',
-    };
-  }
-  if (invoice.latePaymentWarningCode === 'PAYMENT_RECEIVED_AFTER_EXPIRY') {
-    return {
-      title: 'Payment received after invoice expiry',
-      body: 'This transaction proves funds reached the seller after the original payment window.',
-    };
-  }
-  return null;
-}
-
-export default function PaymentReceipt({ invoice }: PaymentReceiptProps) {
-  const warning = latePaymentWarning(invoice);
+function PaymentReceipt({ invoice }: PaymentReceiptProps) {
   const handleDownloadPDF = () => {
     openInvoicePDF(invoice as any);
     toast.success('Opening payment proof');
@@ -255,8 +236,9 @@ Stellar Blockchain Payment System
 
       <div className="border-t pt-6 space-y-3 print:hidden">
         <button
+          type="button"
           onClick={handleDownloadPDF}
-          className="btn btn-primary w-full flex items-center justify-center gap-2"
+          className="btn btn-primary w-full flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2" aria-label="Download Payment Proof PDF" aria-haspopup="dialog"
         >
           <FileText className="w-5 h-5" aria-hidden="true" />
           Download Proof
@@ -268,11 +250,13 @@ Stellar Blockchain Payment System
           `title` explaining why was never read out.
         */}
         <button
-          onClick={canEmail ? handleEmailProof : undefined}
-          aria-disabled={!canEmail}
-          aria-describedby={canEmail ? undefined : emailReasonId}
-          aria-label={canEmail && proofRecipient ? `Email payment proof to ${proofRecipient}` : 'Email Proof'}
-          className="btn btn-secondary w-full flex items-center justify-center gap-2"
+          type="button"
+          onClick={!invoice.customerEmail ? undefined : handleEmailProof}
+          disabled={!invoice.customerEmail}
+          title={!invoice.customerEmail ? 'No client email on this invoice' : 'Email Proof'}
+          className={`btn btn-secondary w-full flex items-center justify-center gap-2 ${
+            !invoice.customerEmail ? 'opacity-50 cursor-not-allowed' : ''
+          }`}
         >
           <Mail className="w-5 h-5" aria-hidden="true" />
           Email Proof
@@ -298,6 +282,7 @@ Stellar Blockchain Payment System
         </a>
 
         <button
+          type="button"
           onClick={handleDownload}
           className="btn btn-outline w-full flex items-center justify-center gap-2 text-sm"
         >
@@ -315,5 +300,13 @@ Stellar Blockchain Payment System
         </p>
       </div>
     </section>
+  );
+}
+
+export default function BoundaryWrappedPaymentReceipt(props: PaymentReceiptProps) {
+  return (
+    <Boundary name="PaymentReceipt" fallbackMessage="Failed to load payment receipt">
+      <PaymentReceipt {...props} />
+    </Boundary>
   );
 }

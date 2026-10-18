@@ -136,6 +136,8 @@ export const invoiceApi = USE_MOCK_API ? mockInvoiceApi : {
     status?: string;
     limit?: number;
     offset?: number;
+    /** pagination.nextCursor from the previous page; stable under inserts, unlike offset. */
+    cursor?: string;
   }) => {
     const response = await api.get('/invoices', { params });
     return response.data;
@@ -173,6 +175,21 @@ export const invoiceApi = USE_MOCK_API ? mockInvoiceApi : {
     const response = await api.get('/invoices/stats', {
       params: { sellerPublicKey },
     });
+    return response.data;
+  },
+
+  getEmailPreview: async (id: string, type?: 'payment_request' | 'payment_proof') => {
+    const response = await api.get(`/invoices/${id}/email-preview`, {
+      params: type ? { type } : undefined,
+    });
+    return response.data;
+  },
+
+  sendEmail: async (
+    id: string,
+    data?: { templateType?: 'payment_request' | 'payment_proof'; recipientEmail?: string }
+  ) => {
+    const response = await api.post(`/invoices/${id}/send-email`, data || {});
     return response.data;
   },
 };
