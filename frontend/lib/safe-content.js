@@ -26,17 +26,23 @@ const FORMULA_TRIGGER = /^[=+\-@\t\r]/;
 /**
  * One CSV cell: always quoted, embedded quotes doubled, and spreadsheet
  * formula prefixes (= + - @ tab CR) neutralised with a leading apostrophe.
- * Numbers are written as-is.
+ * Numbers are written as-is. Non-finite numbers become empty strings (issue #178).
  */
 function csvCell(value) {
   if (value === null || value === undefined) return '""';
-  if (typeof value === 'number') return `"${value}"`;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? `"${value}"` : '""';
+  }
   let text = String(value);
   if (FORMULA_TRIGGER.test(text)) text = `'${text}`;
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-/** Returns the URL if it is plain https, otherwise null. No credentials, no javascript:/data: schemes. */
+/**
+ * Returns the URL if it is plain https, otherwise null.
+ * Rejects: credentials, javascript:/data: schemes, whitespace, control chars,
+ * backslashes, non-string inputs, and URLs with empty hostnames (issue #178).
+ */
 function safeExternalUrl(value) {
   if (typeof value !== 'string') return null;
   const raw = value.trim();
@@ -44,6 +50,8 @@ function safeExternalUrl(value) {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:' || url.username || url.password || !url.hostname) return null;
+    // Reject URLs with only a TLD and no meaningful host (e.g. "https://.com")
+    if (url.hostname.length < 3 || !url.hostname.includes('.')) return null;
     return url.toString();
   } catch {
     return null;

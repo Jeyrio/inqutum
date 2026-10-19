@@ -49,20 +49,26 @@ const isExpiredInvoice = (statusOrInvoice, now) =>
 
 /**
  * Hardened check for whether payment controls (Freighter pay button, memo input, etc.)
- * should be rendered (#151).
+ * should be rendered (#151, #176).
  *
  * Guarantees:
  * - Fails closed if invoice is expired (by explicit status or timestamp).
  * - Fails closed if invoice status is not PENDING.
  * - Fails closed if a transaction hash has already been attached/provided.
  * - Fails closed on missing or malformed inputs without throwing exceptions.
+ * - Fails closed on non-object invoices, non-string status, or non-finite `now`.
  */
 const shouldShowPaymentControls = (statusOrInvoice, paymentTxHash, now) => {
-  if (!statusOrInvoice) {
+  if (!statusOrInvoice || typeof statusOrInvoice !== 'object') {
     return false;
   }
   const invoice = asInvoice(statusOrInvoice);
   if (!invoice || typeof invoice !== 'object') {
+    return false;
+  }
+
+  // Reject non-finite timestamps — a NaN `now` would make expiry comparisons meaningless.
+  if (now !== undefined && now !== null && !Number.isFinite(now)) {
     return false;
   }
 
@@ -75,8 +81,9 @@ const shouldShowPaymentControls = (statusOrInvoice, paymentTxHash, now) => {
     return false;
   }
 
+  // Reject any truthy txHash, including non-string types (numbers, objects).
   const txHash = paymentTxHash ?? invoice.paymentTxHash;
-  if (txHash && typeof txHash === 'string' && txHash.trim().length > 0) {
+  if (txHash !== undefined && txHash !== null && String(txHash).trim().length > 0) {
     return false;
   }
 

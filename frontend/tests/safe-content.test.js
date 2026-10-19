@@ -127,3 +127,36 @@ test('the print document CSP blocks scripts, external loads, base and form hijac
 test('external windows open with noopener and noreferrer', () => {
   assert.deepEqual(EXTERNAL_WINDOW_FEATURES.split(','), ['noopener', 'noreferrer']);
 });
+
+// ── Hardened edge cases (issue #178) ─────────────────────────────────────────
+
+test('csvCell handles non-finite numbers safely', () => {
+  assert.equal(csvCell(NaN), '""');
+  assert.equal(csvCell(Infinity), '""');
+  assert.equal(csvCell(-Infinity), '""');
+});
+
+test('csvCell handles symbols and bigints without throwing', () => {
+  assert.equal(csvCell(Symbol('x')), '"Symbol(x)"');
+  assert.equal(csvCell(10n), '"10"');
+});
+
+test('safeExternalUrl rejects URLs with bare TLD hostnames', () => {
+  assert.equal(safeExternalUrl('https://.com'), null);
+  assert.equal(safeExternalUrl('https://a.'), null);
+  assert.equal(safeExternalUrl('https://localhost.local'), null);
+});
+
+test('safeExternalUrl rejects non-string types', () => {
+  assert.equal(safeExternalUrl(42), null);
+  assert.equal(safeExternalUrl(null), null);
+  assert.equal(safeExternalUrl(undefined), null);
+  assert.equal(safeExternalUrl({}), null);
+  assert.equal(safeExternalUrl([]), null);
+});
+
+test('safeExternalUrl accepts valid https URLs with real hostnames', () => {
+  assert.ok(safeExternalUrl('https://example.com/path?q=1'));
+  assert.ok(safeExternalUrl('https://sub.domain.co.uk'));
+  assert.ok(safeExternalUrl('https://stellar.expert/explorer/public'));
+});

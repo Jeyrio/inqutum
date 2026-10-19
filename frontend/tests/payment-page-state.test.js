@@ -470,3 +470,33 @@ test('an absent state is handled without throwing', () => {
   assert.equal(describePaymentState(undefined), '');
   assert.equal(paymentStateKind(null), 'status');
 });
+
+// ── Hardened edge cases (issue #176) ─────────────────────────────────────────
+
+test('shouldShowPaymentControls fails closed on non-object invoices', () => {
+  assert.equal(shouldShowPaymentControls(null), false);
+  assert.equal(shouldShowPaymentControls(undefined), false);
+  assert.equal(shouldShowPaymentControls('PENDING'), false);
+  assert.equal(shouldShowPaymentControls(42), false);
+  assert.equal(shouldShowPaymentControls(true), false);
+});
+
+test('shouldShowPaymentControls fails closed on non-finite now', () => {
+  assert.equal(shouldShowPaymentControls(pending, null, NaN), false);
+  assert.equal(shouldShowPaymentControls(pending, null, Infinity), false);
+  assert.equal(shouldShowPaymentControls(pending, null, -Infinity), false);
+});
+
+test('shouldShowPaymentControls rejects non-string truthy txHash', () => {
+  assert.equal(shouldShowPaymentControls(pending, 12345), false);
+  assert.equal(shouldShowPaymentControls(pending, {}), false);
+  assert.equal(shouldShowPaymentControls(pending, true), false);
+  assert.equal(shouldShowPaymentControls(pending, ['hash']), false);
+});
+
+test('shouldShowPaymentControls accepts undefined and null txHash', () => {
+  assert.equal(shouldShowPaymentControls(pending, undefined), true);
+  assert.equal(shouldShowPaymentControls(pending, null), true);
+  assert.equal(shouldShowPaymentControls(pending, ''), true);
+  assert.equal(shouldShowPaymentControls(pending, '  '), true);
+});
