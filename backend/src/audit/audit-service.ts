@@ -176,7 +176,12 @@ export class MemoryAuditStore {
 
   queryEvents(filter: AuditFilter = {}): AuditQueryResult {
     // Reverse events copy so most recent comes first by default
-    let result = [...this.events].reverse();
+    // Timestamp ties are common when several state transitions are committed
+    // in one request. Use the immutable event id as a deterministic tie-breaker
+    // so pagination never reshuffles between calls.
+    let result = [...this.events].sort((a, b) =>
+      b.timestamp.localeCompare(a.timestamp) || a.id.localeCompare(b.id)
+    );
 
     if (filter.action) {
       result = result.filter((e) => e.action === filter.action);
