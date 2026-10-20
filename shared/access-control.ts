@@ -45,6 +45,7 @@ export const PERMISSIONS = [
   'quota:override',
   'analytics:read',
   'analytics:clear',
+  'notification:preferences:write',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -69,6 +70,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'invoice:email',
     'invoice:deliveries',
     'stellar:read',
+    'notification:preferences:write',
   ],
   maintainer: [
     'lifecycle:read',
@@ -90,6 +92,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'quota:override',
     'analytics:read',
     'analytics:clear',
+    'notification:preferences:write',
   ],
   service: [
     'lifecycle:read',
@@ -122,6 +125,7 @@ export const OWNED_PERMISSIONS: readonly Permission[] = [
   'invoice:cancel',
   'invoice:audit',
   'invoice:deliveries',
+  'notification:preferences:write',
 ];
 
 export function isRole(value: unknown): value is Role {

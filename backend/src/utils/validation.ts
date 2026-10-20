@@ -40,6 +40,12 @@ const plainText = (max: number, multiline = false) =>
     .max(max)
     .transform((value) => sanitizePlainText(value, { multiline }) || undefined);
 
+/**
+ * Import key. Bounded to the `invoices.external_id VARCHAR(255)` column, the
+ * same limit `imports/import-pipeline.ts` reports per row.
+ */
+const externalIdSchema = z.string().max(255);
+
 export const createInvoiceSchema = z
   .object({
     amount: z.number().positive().max(DEFAULT_POLICY.invoice.maxAmount),

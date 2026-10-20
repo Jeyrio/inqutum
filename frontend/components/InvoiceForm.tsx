@@ -24,6 +24,18 @@ const FIELD_IDS: Record<InvoiceFormField, string> = {
   customerEmail: 'invoice-customer-email',
 };
 
+export const INVOICE_FORM_ERROR_SUMMARY_ID = 'invoice-form-error-summary';
+
+/** One sentence for the live region: how many fields, then each message in form order. */
+export function invoiceFormErrorSummary(errors: InvoiceFormErrors): string {
+  const messages = (Object.keys(FIELD_IDS) as InvoiceFormField[])
+    .map((field) => errors[field])
+    .filter(Boolean);
+  if (messages.length === 0) return '';
+  const count = messages.length === 1 ? '1 field needs' : `${messages.length} fields need`;
+  return `Invoice not created. ${count} attention: ${messages.join(' ')}`;
+}
+
 interface InvoiceFormProps {
   onSuccess?: (invoice: any) => void;
   userWallet?: string;
@@ -94,6 +106,10 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
       return;
     }
 
+    // The input is valid now, so earlier field errors are stale. Clearing them
+    // here (not only after a successful create) means an API failure after a
+    // corrected submit does not leave fixed fields marked aria-invalid.
+    setErrors({});
     setLoading(true);
     setApiError(null);
     try {
@@ -121,19 +137,27 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+      {/*
+        Mounted from the first render and only its text changes, so a failed
+        submit is announced reliably (a live region inserted together with its
+        text is skipped by some screen readers). Focus still moves to the first
+        invalid field; this gives the whole picture once instead of making the
+        listener tab through every field to find out what went wrong.
+      */}
+      <div id={INVOICE_FORM_ERROR_SUMMARY_ID} role="alert" aria-atomic="true" className="sr-only">
+        {invoiceFormErrorSummary(errors)}
+      </div>
       {apiError && <ApiErrorState message={apiError} compact />}
       <div>
         <label className="label" htmlFor={FIELD_IDS.amount}>Invoice Amount *</label>
         <div className="flex gap-3 flex-col sm:flex-row">
           <input
-            id="invoice-amount"
             name="amount"
             type="number"
             step="0.0000001"
             min="0.0000001"
             required
             aria-required="true"
-            aria-describedby="invoice-amount-hint"
             className="input flex-1 text-2xl font-semibold"
             {...errorProps('amount')}
             placeholder="10.00"
@@ -145,7 +169,8 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
               Asset
             </label>
             <select
-              aria-label="Asset"
+              id="invoice-asset"
+              name="assetCode"
               value={assetCode}
               onChange={(e) => setAssetCode(e.target.value)}
               className="input w-full sm:w-40 text-sm font-semibold pl-12 pr-3 appearance-none cursor-pointer"
@@ -219,7 +244,6 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
         <div>
           <label className="label" htmlFor={FIELD_IDS.sellerEmail}>Your email (optional)</label>
           <input
-            id="seller-email"
             name="sellerEmail"
             type="email"
             autoComplete="email"
@@ -250,10 +274,8 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
       <div>
         <label className="label" htmlFor={FIELD_IDS.customerEmail}>Client email (optional)</label>
         <input
-          id="customer-email"
           name="customerEmail"
           type="email"
-          aria-describedby="customer-email-hint"
           className="input text-sm"
           {...errorProps('customerEmail', 'invoice-customer-email-hint')}
           placeholder="client@example.com — for sending the invoice"
@@ -267,9 +289,10 @@ export default function InvoiceForm({ onSuccess, userWallet }: InvoiceFormProps)
         </p>
       </div>
 
+      {/* aria-disabled keeps focus on the button while the request runs; handleSubmit ignores re-entry. */}
       <button
         type="submit"
-        disabled={loading}
+        aria-disabled={loading}
         aria-busy={loading}
         className="btn btn-primary w-full flex items-center justify-center gap-2 mt-6"
       >

@@ -411,9 +411,9 @@ export const API_CONTRACT: ContractEndpoint[] = [
     path: '/api/notifications/preferences',
     group: 'public',
     surfaces: BOTH,
-    auth: 'none',
+    auth: 'public',
     summary: 'Update durable notification routing preferences for a recipient.',
-    responses: [200, 400],
+    responses: [200, 400, 401, 403],
   },
   {
     method: 'GET',

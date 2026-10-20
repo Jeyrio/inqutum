@@ -12,7 +12,11 @@
 
 const routes = new Map();
 
-/** Registers the payload `lib/api.ts` should see for a path suffix. */
+/**
+ * Registers the payload `lib/api.ts` should see for a path suffix. A function
+ * is called per request and its result (the `{ data }` response, or a
+ * rejection) is used as-is.
+ */
 function setResponse(pathSuffix, payload) {
   routes.set(pathSuffix, payload);
 }
@@ -33,7 +37,11 @@ function resolve(url) {
     return Promise.reject(error);
   }
 
-  return Promise.resolve({ data: routes.get(matches[0]) });
+  // A function fixture controls timing and outcome itself, so a test can hold
+  // a request open (to observe a busy state) or fail it on demand.
+  const payload = routes.get(matches[0]);
+  if (typeof payload === 'function') return Promise.resolve().then(payload);
+  return Promise.resolve({ data: payload });
 }
 
 function createInstance() {

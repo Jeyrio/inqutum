@@ -13,8 +13,11 @@ import {
 import { toast } from 'sonner';
 import { Wallet, Loader2 } from 'lucide-react';
 import { invoiceApi } from '@/lib/api';
-import { showFreighterInstallPrompt } from '@/components/FreighterInstallPrompt';
+import { showFreighterInstallPrompt, showFreighterWrongNetworkPrompt } from '@/components/FreighterInstallPrompt';
 import { describeVerifyError } from '@/lib/payment-page-state';
+import { useWalletStore } from '@/lib/store';
+import { walletGate } from '@/lib/freighter-availability';
+import { shouldInvalidateUnsignedPayment } from '@/lib/wallet-account-switch';
 import {
   WALLET_ERRORS,
   validatePaymentRequest,

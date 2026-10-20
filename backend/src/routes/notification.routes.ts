@@ -2,6 +2,14 @@ import { Request, Response, Router } from 'express';
 import { stellarPublicKeySchema } from '../utils/validation';
 import { sendFailure, sendSuccess } from '../types/api';
 import { NotificationService, notificationService } from '../notifications/notification-service';
+import {
+  MANDATORY_NOTIFICATION_CATEGORIES,
+  notificationPreferencePatchSchema,
+  type RecipientNotificationPreferences,
+} from '../notifications/notification-preference';
+import { authenticate, mayAccessSeller, requirePermission } from '../middleware/access-control';
+import { ANONYMOUS_ACTOR } from '../auth/actor';
+import type { AuditActor } from '../audit/audit-service';
 
 export interface NotificationRouterOptions {
   service?: NotificationService;
@@ -20,6 +28,15 @@ function recipientOf(req: Request, res: Response): string | null {
   return parsed.data;
 }
 
+/**
+ * Preferences plus the categories routing will deliver regardless of them.
+ * Additive: every field the response had before is unchanged.
+ */
+const withMandatoryCategories = (preferences: RecipientNotificationPreferences) => ({
+  ...preferences,
+  mandatoryCategories: [...MANDATORY_NOTIFICATION_CATEGORIES],
+});
+
 const int = (v: unknown, fallback: number) => {
   const n = parseInt(String(v), 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
@@ -33,6 +50,14 @@ const int = (v: unknown, fallback: number) => {
  *   GET  /notifications/unread-count?recipient=
  *   POST /notifications/read-all      { recipient }
  *   POST /notifications/:id/read      { recipient }
+ *   GET  /notifications/preferences?recipient=
+ *   PUT  /notifications/preferences   { recipient, channels?, categories? }
+ *   GET  /notifications/routing-audit?recipient=
+ *
+ * Changing preferences is the one write that can silence someone else's
+ * alerts, so it alone requires a credential: the recipient's own wallet
+ * session, or a maintainer acting for them (Issue #193). Reads keep the
+ * recipient-scoped model the rest of this router uses.
  */
 export function createNotificationRouter(options: NotificationRouterOptions = {}): Router {
   const service = options.service ?? notificationService;
@@ -80,19 +105,52 @@ export function createNotificationRouter(options: NotificationRouterOptions = {}
     const recipient = recipientOf(req, res);
     if (!recipient) return;
     const preferences = service.getPreferences(recipient);
-    sendSuccess(res, 200, preferences);
+    sendSuccess(res, 200, withMandatoryCategories(preferences));
   });
 
-  router.put('/notifications/preferences', (req, res) => {
-    const recipient = recipientOf(req, res);
-    if (!recipient) return;
-    const patch = {
-      channels: req.body?.channels,
-      categories: req.body?.categories,
-    };
-    const preferences = service.savePreferences(recipient, patch);
-    sendSuccess(res, 200, preferences);
-  });
+  router.put(
+    '/notifications/preferences',
+    authenticate(),
+    requirePermission('notification:preferences:write'),
+    (req, res) => {
+      const recipient = recipientOf(req, res);
+      if (!recipient) return;
+
+      const actor = req.actor ?? ANONYMOUS_ACTOR;
+      if (!mayAccessSeller(actor, 'notification:preferences:write', recipient)) {
+        return sendFailure(res, 403, 'You can only change your own notification preferences', {
+          code: 'FORBIDDEN',
+          correlationId: req.correlationId,
+        });
+      }
+
+      // `recipient` addresses the resource; everything else must be a valid patch.
+      const { recipient: _recipient, ...body } = req.body ?? {};
+      const parsed = notificationPreferencePatchSchema.safeParse(body);
+      if (!parsed.success) {
+        // The "at least one preference" refinement also fires when every key
+        // was unknown; report it only when it is the sole problem.
+        const specific = parsed.error.issues.filter((i) => i.code !== 'custom');
+        const issues = (specific.length > 0 ? specific : parsed.error.issues)
+          .map((i) => `${i.path.join('.') || 'body'}: ${i.message}`)
+          .join('; ');
+        return sendFailure(res, 400, `Notification preference update is invalid: ${issues}`, {
+          code: 'INVALID_NOTIFICATION_PREFERENCES',
+          correlationId: req.correlationId,
+        });
+      }
+
+      const changedBy: AuditActor =
+        actor.role === 'maintainer'
+          ? { type: 'maintainer', id: actor.subject }
+          : { type: 'seller', id: actor.wallet ?? recipient };
+      const preferences = service.savePreferences(recipient, parsed.data, {
+        changedBy,
+        correlationId: req.correlationId,
+      });
+      sendSuccess(res, 200, withMandatoryCategories(preferences));
+    }
+  );
 
   router.get('/notifications/routing-audit', (req, res) => {
     const recipient = recipientOf(req, res);

@@ -16,9 +16,15 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { StoredInvoice } from '../storage/invoice-storage';
 import type { VerificationCode } from '../services/payment-verification';
+import { recordAuditEvent } from '../audit/record-event';
+import type { AuditActor } from '../audit/audit-service';
 import {
   evaluateNotificationRouting,
   MemoryNotificationPreferenceStore,
+  notificationPreferencePatchSchema,
+  overriddenMandatoryCategories,
+  type NotificationCategory,
+  type NotificationPreferencePatch,
   type NotificationPreferenceStore,
   type RecipientNotificationPreferences,
   type RoutingAuditRecord,
@@ -50,6 +56,32 @@ export interface Notification {
   createdAt: string;
   readAt: string | null;
 }
+
+/** One accepted preference edit, as handed to the audit sink. */
+export interface PreferenceChange {
+  recipient: string;
+  changedBy: AuditActor;
+  before: RecipientNotificationPreferences;
+  after: RecipientNotificationPreferences;
+  /** Mandatory categories now switched off; their alerts are still delivered. */
+  overriddenMandatoryCategories: NotificationCategory[];
+  correlationId?: string;
+}
+
+export type PreferenceChangeSink = (change: PreferenceChange) => void;
+
+/** Default sink: the process-wide hash-chained audit trail. */
+export const auditPreferenceChange: PreferenceChangeSink = (change) => {
+  recordAuditEvent({
+    action: 'NOTIFICATION_PREFERENCES_UPDATED',
+    actor: change.changedBy,
+    scope: { entityType: 'notification_preferences', entityId: change.recipient },
+    beforeState: { channels: change.before.channels, categories: change.before.categories },
+    afterState: { channels: change.after.channels, categories: change.after.categories },
+    metadata: { overriddenMandatoryCategories: change.overriddenMandatoryCategories },
+    correlationId: change.correlationId,
+  });
+};
 
 export interface NotificationQuery {
   unreadOnly?: boolean;
@@ -156,6 +188,11 @@ export class MemoryNotificationStore {
     return (this.byRecipient.get(recipient) ?? []).map((id) => this.byId.get(id)!).reverse();
   }
 
+  findByDedupKey(dedupKey: string): Notification | undefined {
+    const id = this.byDedup.get(dedupKey);
+    return id ? this.byId.get(id) : undefined;
+  }
+
   getForRecipient(recipient: string, id: string): Notification | undefined {
     const n = this.byId.get(id);
     return n && n.recipient === recipient ? n : undefined;
@@ -172,12 +209,19 @@ export class NotificationService {
   constructor(
     private readonly store = new MemoryNotificationStore(),
     private readonly now: () => Date = () => new Date(),
-    private readonly preferenceStore: NotificationPreferenceStore = new MemoryNotificationPreferenceStore()
+    private readonly preferenceStore: NotificationPreferenceStore = new MemoryNotificationPreferenceStore(),
+    private readonly onPreferenceChange: PreferenceChangeSink = auditPreferenceChange
   ) {}
 
   private emit(
     input: Pick<Notification, 'recipient' | 'type' | 'severity' | 'title' | 'message' | 'entityId' | 'data'> & { dedupKey: string }
   ): { notification: Notification | null; created: boolean; suppressed?: boolean; routingReason?: string } {
+    // A replayed event (every invoice read re-syncs) was already routed and
+    // audited once. Evaluating it again would add a routing record pointing at
+    // a notification id that is never stored.
+    const existing = this.store.findByDedupKey(input.dedupKey);
+    if (existing) return { notification: existing, created: false, suppressed: false };
+
     const id = uuidv4();
     const prefs = this.preferenceStore.getPreferences(input.recipient);
     const evaluation = evaluateNotificationRouting(
@@ -315,14 +359,29 @@ export class NotificationService {
     return this.preferenceStore.getPreferences(recipient);
   }
 
+  /**
+   * Applies a validated preference patch. Throws a ZodError for an invalid
+   * patch, so callers outside the HTTP route cannot store unknown keys either.
+   * Every accepted edit is reported to the preference-change sink, attributed
+   * to `changedBy` (the recipient's own wallet when no actor is given).
+   */
   savePreferences(
     recipient: string,
-    patch: {
-      channels?: Partial<RecipientNotificationPreferences['channels']>;
-      categories?: Partial<RecipientNotificationPreferences['categories']>;
-    }
+    patch: NotificationPreferencePatch,
+    context: { changedBy?: AuditActor; correlationId?: string } = {}
   ): RecipientNotificationPreferences {
-    return this.preferenceStore.savePreferences(recipient, patch);
+    const validated = notificationPreferencePatchSchema.parse(patch);
+    const before = this.preferenceStore.getPreferences(recipient);
+    const after = this.preferenceStore.savePreferences(recipient, validated);
+    this.onPreferenceChange({
+      recipient,
+      changedBy: context.changedBy ?? { type: 'seller', id: recipient },
+      before,
+      after,
+      overriddenMandatoryCategories: overriddenMandatoryCategories(after),
+      correlationId: context.correlationId,
+    });
+    return after;
   }
 
   getRoutingAudit(recipient: string): RoutingAuditRecord[] {

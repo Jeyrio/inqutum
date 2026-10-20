@@ -3,6 +3,16 @@
  * Hardens boundary contracts for date parsing, status transitions, and immutability.
  */
 
+// What a status allows comes from the shared table the backend stores enforce,
+// so the UI cannot offer an action the server would refuse.
+const {
+  INVOICE_STATUSES,
+  allowedTransitions,
+  canTransition,
+  isTerminalStatus,
+  nextStatus,
+} = require('../../shared/invoice-lifecycle.ts');
+
 /**
  * Safely parses an expiry value into a numeric Unix millisecond timestamp.
  *
@@ -159,6 +169,25 @@ function isActionableInvoice(invoice, now = Date.now()) {
   }
 
   return true;
+}
+
+/**
+ * Whether the seller may cancel the invoice right now. Asks the lifecycle for
+ * the CANCEL event rather than hard-coding "is PENDING", and honours expiry.
+ */
+function canCancelInvoice(invoice, now = Date.now()) {
+  if (!invoice) return false;
+  return nextStatus(effectiveInvoiceStatus(invoice, now), 'CANCEL') !== null;
+}
+
+/**
+ * Whether a payer may still settle the invoice on time. This is the SETTLE
+ * event, not "any transition to PAID": a cancelled invoice can be settled late
+ * by the server when a payment is found, but the UI must never invite one.
+ */
+function canPayInvoice(invoice, now = Date.now()) {
+  if (!invoice || invoice.paymentTxHash) return false;
+  return nextStatus(effectiveInvoiceStatus(invoice, now), 'SETTLE') !== null;
 }
 
 module.exports = {

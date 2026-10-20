@@ -1,7 +1,9 @@
 'use client';
 
 import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
-import { getExplorerTransactionUrl } from '@/lib/stellar';
+import { NETWORK_DISPLAY_NAME, getExplorerTransactionUrl } from '@/lib/stellar';
+import { statusText } from '@/lib/a11y';
+import { statusLabel } from '@/lib/invoice-status-label';
 import { Boundary } from './Boundary';
 
 interface PaymentStatusProps {

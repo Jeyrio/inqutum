@@ -28,3 +28,6 @@ export const motion = new Proxy(
 );
 
 export const AnimatePresence = ({ children }) => children;
+
+/** Context-only in the real library; renders nothing of its own. */
+export const MotionConfig = ({ children }) => children;

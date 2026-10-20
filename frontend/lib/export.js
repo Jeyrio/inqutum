@@ -49,6 +49,18 @@ function generateInvoicePDF(invoice) {
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: Arial, sans-serif; padding: 20px; color: #1f2937; background: white; font-size: 14px; line-height: 1.4; }
+    /* Names the details table for screen readers without changing the printed layout. */
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   </style>
 </head>
 <body>
@@ -68,6 +80,7 @@ function generateInvoicePDF(invoice) {
   </div>
 
   <table class="details-table">
+    <caption class="visually-hidden">Payment proof details</caption>
     <tr><th scope="row">Invoice ID</th><td>${escapeHtml(invoice.id)}</td></tr>
     <tr><th scope="row">Memo</th><td>${escapeHtml(invoice.memo)}</td></tr>
     <tr><th scope="row">Seller Address</th><td>${escapeHtml(invoice.sellerPublicKey)}</td></tr>

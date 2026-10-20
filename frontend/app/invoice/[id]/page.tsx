@@ -21,7 +21,7 @@ import { useWalletStore } from '@/lib/store';
 import ApiErrorState from '@/components/ApiErrorState';
 import { effectiveInvoiceStatus } from '@/lib/invoice-lifecycle';
 import { invoiceSharePath } from '@/lib/invoice-share-path';
-import { useWalletStore } from '@/lib/store';
+import { shareInvoiceByEmail } from '@/lib/export';
 import { EXPECTED_WALLET_NETWORK } from '@/lib/stellar';
 import { walletGate } from '@/lib/freighter-availability';
 
@@ -158,8 +158,11 @@ export default function InvoiceDetailPage() {
         <div className="orb orb-1"></div>
         <div className="orb orb-2"></div>
         <div className="orb orb-3"></div>
-        <div className="card text-center max-w-md relative z-10">
-          <h1 className="text-2xl font-bold text-red-600 mb-2">Invoice Not Found</h1>
+        <div className="card text-center max-w-md relative z-10" role="alert">
+          <h1 className="text-2xl font-bold text-red-700 mb-2">Invoice Not Found</h1>
+          <p className="text-gray-700">
+            {loadError ?? 'The invoice you are looking for does not exist.'}
+          </p>
         </div>
       </main>
     );
@@ -174,52 +177,78 @@ export default function InvoiceDetailPage() {
       <div className="orb orb-2"></div>
       <div className="orb orb-3"></div>
 
-      <div className="max-w-4xl mx-auto relative z-10">
-        <header className="fixed top-0 left-0 right-0 z-50 premium-header border-b border-gray-200">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => router.back()}
-                className="btn btn-outline flex items-center gap-2"
-              >
-                <ArrowLeft className="w-5 h-5" />
-                <span className="sr-only sm:not-sr-only">Back</span>
-              </button>
-              <Link href="/" className="hover:opacity-90 transition-opacity">
-                <span className="font-display text-xl tracking-tight text-[var(--ink)]">Quittance</span>
-              </Link>
-            </div>
-
-            <div className="flex items-center gap-3">
-              {!userWallet ? (
-                <WalletConnect onConnect={setUserWallet} />
-              ) : (
-                <UserProfile userWallet={userWallet} onDisconnect={() => setUserWallet(null)} />
-              )}
-              {effectiveStatus === 'PENDING' && (
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleShare}
-                    className="btn btn-primary flex items-center gap-2"
-                  >
-                    <Share2 className="w-5 h-5" />
-                    <span className="sr-only sm:not-sr-only">Share</span>
-                  </button>
-                  {userWallet && invoice.sellerPublicKey === userWallet && (
-                    <button
-                      onClick={handleCancel}
-                      className="btn btn-destructive flex items-center gap-2"
-                    >
-                      <X className="w-5 h-5" />
-                      <span className="sr-only sm:not-sr-only">Cancel</span>
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
+      {/* Top-level banner landmark, not nested inside the content wrapper. */}
+      <header className="fixed top-0 left-0 right-0 z-50 premium-header border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {/*
+              Labels here are hidden below `sm`, so each control carries an
+              explicit accessible name that does not depend on the breakpoint.
+            */}
+            <button
+              onClick={() => router.back()}
+              className="btn btn-outline flex items-center gap-2"
+              aria-label="Go back to the previous page"
+            >
+              <ArrowLeft className="w-5 h-5" aria-hidden="true" />
+              <span className="hidden sm:inline">Back</span>
+            </button>
+            <Link href="/" className="hover:opacity-90 transition-opacity">
+              <span className="font-display text-xl tracking-tight text-[var(--ink)]">Quittance</span>
+            </Link>
           </div>
 
-        <main id="main-content" className="pt-20">
+          <nav className="flex items-center gap-3" aria-label="Invoice actions">
+            {!publicKey ? (
+              <WalletConnect />
+            ) : (
+              <UserProfile userWallet={publicKey} />
+            )}
+            {effectiveStatus === 'PENDING' && (
+              <div className="flex items-center gap-2">
+                {invoice.customerEmail && (
+                  <button
+                    onClick={() => {
+                      shareInvoiceByEmail(invoice);
+                      toast.success('Opening email client');
+                    }}
+                    className="btn btn-outline flex items-center gap-2"
+                    aria-label={`Email invoice to ${invoice.customerEmail}`}
+                  >
+                    <Mail className="w-5 h-5" aria-hidden="true" />
+                    <span className="hidden sm:inline">Email</span>
+                  </button>
+                )}
+                <button
+                  onClick={handleShare}
+                  className="btn btn-primary flex items-center gap-2"
+                  aria-label="Share this invoice"
+                >
+                  <Share2 className="w-5 h-5" aria-hidden="true" />
+                  <span className="hidden sm:inline">Share</span>
+                </button>
+                {activeWallet && invoice.sellerPublicKey === activeWallet && (
+                  <button
+                    onClick={handleCancel}
+                    className="btn btn-destructive flex items-center gap-2"
+                    aria-label="Cancel this invoice"
+                  >
+                    <X className="w-5 h-5" aria-hidden="true" />
+                    <span className="hidden sm:inline">Cancel</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </nav>
+        </div>
+      </header>
+
+      <div className="max-w-4xl mx-auto relative z-10">
+        <main id={MAIN_CONTENT_ID} tabIndex={-1} className="pt-20">
+          <h1 className="sr-only">
+            Invoice for {describeAmount(formatAmount(invoice.amount, 7), invoice.assetCode)}
+          </h1>
+
           {loadError && (
             <div className="mb-6">
               <ApiErrorState message={loadError} onRetry={() => void loadInvoice()} compact />
@@ -228,7 +257,7 @@ export default function InvoiceDetailPage() {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
             <div className="card">
-              <h1 className="text-3xl font-bold text-gray-900 mb-8">Invoice Details</h1>
+              <h2 className="text-3xl font-bold text-gray-900 mb-8">Invoice Details</h2>
 
               {/*
                 A description list: each of these is a label/value pair, which

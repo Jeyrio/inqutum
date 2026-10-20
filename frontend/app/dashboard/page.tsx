@@ -72,7 +72,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (!connected || !publicKey) {
+    if (!gate.ready || !publicKey) {
       setLoaded({ owner: null, invoices: [], stats: null, nextCursor: null });
       setLoading(false);
       return;
@@ -138,7 +138,7 @@ export default function DashboardPage() {
 
   const loadMore = async () => {
     const cursor = loaded.nextCursor;
-    if (!cursor || !publicKey) return;
+    if (!cursor || !publicKey || loadingMore) return;
     setLoadingMore(true);
     try {
       const page = await invoiceApi.getAll({
@@ -211,15 +211,15 @@ export default function DashboardPage() {
               <UserProfile userWallet={publicKey} />
             )}
             <Link href="/" className="btn btn-primary flex items-center gap-2">
-              <Plus className="w-5 h-5" />
-              <span className="sr-only sm:not-sr-only">New Invoice</span>
+              <Plus className="w-5 h-5" aria-hidden="true" />
+              <span className="hidden sm:inline">New Invoice</span>
+              <span className="sm:hidden sr-only">New Invoice</span>
             </Link>
           </nav>
         </div>
       </header>
 
-      <main id="main-content" className="pt-20">
-        <h1 className="sr-only">Invoice dashboard</h1>
+      <main id={MAIN_CONTENT_ID} tabIndex={-1} className="pt-20">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 relative z-10">
         <h1 className="sr-only">Invoice dashboard</h1>
         {connected && isWrongNetwork && (
@@ -350,8 +350,10 @@ export default function DashboardPage() {
                   Search invoices
                 </label>
                 <input
+                  id="invoice-search"
+                  // type="search" so the control is announced as a search field
+                  // and gets the platform's clear affordance.
                   type="search"
-                  aria-label="Search invoices"
                   placeholder="Search invoices..."
                   className="input w-full"
                   value={searchQuery}
@@ -370,8 +372,8 @@ export default function DashboardPage() {
                 aria-describedby={canExport ? undefined : 'export-csv-reason'}
                 aria-label="Export paid invoices to CSV"
               >
-                <Download className="w-5 h-5" />
-                <span className="sr-only sm:not-sr-only">Export CSV</span>
+                <Download className="w-5 h-5" aria-hidden="true" />
+                <span className="hidden sm:inline">Export CSV</span>
               </button>
               {!canExport && (
                 <span id="export-csv-reason" className="sr-only">
@@ -426,23 +428,15 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div role="group" aria-label="Filter by status" className="bg-white rounded-lg border border-gray-200 mb-6 p-2 flex gap-2 flex-wrap">
-              {['all', 'pending', 'paid', 'expired', 'cancelled'].map((status) => (
-                <button
-                  key={status}
-                  type="button"
-                  onClick={() => setFilter(status)}
-                  aria-pressed={filter === status}
-                  className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
-                    filter === status
-                      ? 'bg-[var(--teal)] text-white'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  {status.charAt(0).toUpperCase() + status.slice(1)}
-                </button>
-              ))}
-            </div>
+            <p
+              id={DASHBOARD_RESULTS_ID}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className={`mb-4 text-sm ${loadError ? 'text-red-700' : 'text-gray-600'}`}
+            >
+              {resultsAnnouncement}
+            </p>
 
             {loadError ? (
               <ApiErrorState
@@ -517,22 +511,23 @@ export default function DashboardPage() {
                       />
                     </li>
                   ))}
-                </div>
+                </ul>
                 {loaded.nextCursor && (
                   <div className="mt-6 text-center">
+                    {/* aria-disabled keeps focus on the button while the next page loads. */}
                     <button
                       type="button"
                       onClick={() => void loadMore()}
-                      disabled={loadingMore}
+                      aria-disabled={loadingMore}
                       aria-busy={loadingMore}
                       className="btn btn-outline"
                     >
-                      {loadingMore && <Loader2 className="w-4 h-4 animate-spin" aria-hidden />}
+                      {loadingMore && <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />}
                       Load more invoices
                     </button>
                   </div>
                 )}
-              </>
+              </section>
             )}
           </>
           </>

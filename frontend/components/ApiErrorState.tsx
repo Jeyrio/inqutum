@@ -31,12 +31,25 @@ export default function ApiErrorState({ message, onRetry, compact = false }: Api
       aria-live="assertive"
       className={`border border-red-200 bg-red-50 text-red-950 rounded-2xl ${compact ? 'p-4' : 'card py-10 text-center'}`}
     >
-      <AlertTriangle className={`${compact ? 'w-5 h-5 inline mr-2' : 'w-12 h-12 mx-auto mb-4'} text-red-600`} />
+      <AlertTriangle
+        className={`${compact ? 'w-5 h-5 inline mr-2' : 'w-12 h-12 mx-auto mb-4'} text-red-600`}
+        aria-hidden="true"
+      />
       <p className="font-semibold">The Quittance API is unavailable</p>
       <p className="text-sm text-red-800 mt-1">{message}</p>
       {onRetry && (
-        <button type="button" onClick={handleRetry} disabled={retrying} className="btn btn-outline mt-4 inline-flex items-center gap-2">
-          <RefreshCw className={`w-4 h-4 ${retrying ? 'animate-spin' : ''}`} />
+        // aria-disabled, not disabled: a keyboard user who pressed Retry keeps
+        // focus on it while the request runs (Chrome drops focus to <body> when
+        // a focused button becomes disabled). handleRetry ignores presses while
+        // busy, the same convention as the pay page buttons.
+        <button
+          type="button"
+          onClick={handleRetry}
+          aria-disabled={retrying}
+          aria-busy={retrying}
+          className="btn btn-outline mt-4 inline-flex items-center gap-2"
+        >
+          <RefreshCw className={`w-4 h-4 ${retrying ? 'animate-spin' : ''}`} aria-hidden="true" />
           {retrying ? 'Retrying...' : 'Retry'}
         </button>
       )}

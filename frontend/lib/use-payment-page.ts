@@ -9,6 +9,7 @@ import {
 } from './horizon-outage';
 import {
   PAY_STATES,
+  describeVerifyError,
   initialPaymentState,
   normalizePayerDetails,
   paymentReducer,

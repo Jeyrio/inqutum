@@ -4,6 +4,7 @@ import type { InvoiceStats } from './invoice-stats';
 import { isPendingInvoiceExpired } from '../domain/invoice-expiry';
 import type { StoredInvoice } from './invoice-storage';
 import { checkVersion } from '../concurrency/optimistic-lock';
+import { MemoCollisionError, PaymentClaimIndex } from '../domain/payment-attribution';
 
 type Invoice = StoredInvoice;
 

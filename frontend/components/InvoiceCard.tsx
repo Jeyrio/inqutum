@@ -235,25 +235,32 @@ export default function InvoiceCard({ invoice, userWallet, onCancel }: InvoiceCa
           <button
             type="button"
             onClick={handleDownloadPDF}
-            className="btn btn-primary flex-1 flex items-center justify-center gap-2 text-sm focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2" aria-label="Download Payment Proof PDF" aria-haspopup="dialog"
+            className="btn btn-primary flex-1 flex items-center justify-center gap-2 text-sm min-w-[120px]"
+            aria-label={`Download payment proof for the ${amountLabel} invoice`}
           >
             <Download className="w-4 h-4" aria-hidden="true" />
-            Download Proof
+            Proof
           </button>
         )}
         {status === 'PAID' && (
-          <button
-            type="button"
-            onClick={!invoice.customerEmail ? undefined : handleEmailShare}
-            disabled={!invoice.customerEmail}
-            title={!invoice.customerEmail ? 'No client email on this invoice' : 'Email Proof'}
-            aria-label={!invoice.customerEmail ? 'No client email on this invoice' : 'Email Proof'}
-            className={`btn btn-outline flex items-center justify-center gap-2 px-3 ${
-              !invoice.customerEmail ? 'opacity-50 cursor-not-allowed' : ''
-            }`}
-          >
-            <Mail className="w-4 h-4" aria-hidden="true" />
-          </button>
+          <>
+            {/* aria-disabled, not disabled: the button stays focusable so its reason can be heard. */}
+            <button
+              type="button"
+              onClick={canEmail ? handleEmailProof : undefined}
+              aria-disabled={!canEmail}
+              aria-describedby={canEmail ? undefined : emailReasonId}
+              aria-label={`Email payment proof for the ${amountLabel} invoice`}
+              className="btn btn-outline flex items-center justify-center gap-2 px-3"
+            >
+              <Mail className="w-4 h-4" aria-hidden="true" />
+            </button>
+            {!canEmail && (
+              <span id={emailReasonId} className="sr-only">
+                Unavailable: this invoice has no client or payer email.
+              </span>
+            )}
+          </>
         )}
       </div>
     </article>

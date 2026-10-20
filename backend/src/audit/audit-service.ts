@@ -41,7 +41,9 @@ export type AuditAction =
   | 'DISPUTE_NOTE_ADDED'
   // Counterparty risk controls (#191)
   | 'COUNTERPARTY_RISK_OVERRIDDEN'
-  | 'COUNTERPARTY_RISK_OVERRIDE_CLEARED';
+  | 'COUNTERPARTY_RISK_OVERRIDE_CLEARED'
+  // Participant notification preferences (#193)
+  | 'NOTIFICATION_PREFERENCES_UPDATED';
 
 export type AuditActorType = 'seller' | 'payer' | 'system' | 'maintainer';
 
@@ -53,7 +55,7 @@ export interface AuditActor {
 }
 
 export interface AuditScope {
-  entityType: 'invoice' | 'system' | 'stellar' | 'config' | 'dispute' | 'counterparty';
+  entityType: 'invoice' | 'system' | 'stellar' | 'config' | 'dispute' | 'counterparty' | 'notification_preferences';
   entityId: string;
 }
 

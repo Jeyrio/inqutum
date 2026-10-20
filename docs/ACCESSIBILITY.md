@@ -15,7 +15,12 @@ cd frontend
 npm run lint
 node --test tests/invoice-form-validation.test.js   # inline form error rules
 node --test tests/pay-status-a11y.test.js           # pay-page announcements, keyboard and focus
+node --test tests/a11y-core-pages.test.js           # axe over every core page and component
+node --test tests/a11y-regression-flows.test.js     # dense form, retry, proof table, reduced motion
 ```
+
+The last two load `.ts` modules through Node's type stripping: use Node 24 (as
+CI does), or Node 22 with `NODE_OPTIONS=--experimental-strip-types`.
 
 Static linting cannot see focus order, contrast or live announcements, so run
 the manual pass below for any change to these screens.
@@ -106,6 +111,70 @@ remove `<PayStatusRegion>` from `app/pay/[id]/page.tsx` and revert
 `PayVerifyPanel`, `PaymentButton` and `PayProofPanel`. `lib/pay-status-a11y.js`
 has no other consumers.
 
+## Dense forms, tables and error recovery (issue #257)
+
+`tests/a11y-core-pages.test.js` proves each page is axe-clean in a snapshot.
+`tests/a11y-regression-flows.test.js` covers what a snapshot cannot: what
+happens over time when a participant uses the keyboard, makes a mistake and
+recovers. It renders the shipped components through `tests/support/a11y-harness.js`.
+
+| Area | Behaviour pinned by the test |
+|------|------------------------------|
+| Invoice form, keyboard submit | Enter submits. Focus moves to the first invalid field in form order, which gets `aria-invalid="true"` and `aria-describedby` → its `.field-error`. Every `aria-describedby` id resolves. axe-clean in the error state. |
+| Invoice form, announcement | `#invoice-form-error-summary` (`role="alert"`, `aria-atomic`) is mounted from the first render and only its text changes: "Invoice not created. N fields need attention: …". The same node is updated, so it is announced reliably and only once per submit. |
+| Invoice form, recovery | Once the input validates, field errors clear before the request is sent, so an API failure after a corrected submit does not leave fixed fields marked invalid. |
+| Busy buttons | Submit, Retry and "Load more invoices" use `aria-disabled` + `aria-busy`, not `disabled`, so a keyboard user keeps focus while the request runs. Handlers ignore presses while busy (one request, not two). |
+| API-unavailable state | Retry keeps focus and reports busy. When the retry fails, the same `role="alert"` node carries the new message rather than being replaced. Decorative icons are `aria-hidden`. |
+| Payment proof table | The details table has a `<caption>` ("Payment proof details", visually hidden), every row has a `th scope="row"` and one `td`, and the printed document is axe-clean, including the late-payment notice. |
+| Reduced motion | `globals.css` cuts animation and transition durations to near zero and turns off smooth scrolling under `prefers-reduced-motion: reduce`. The landing page's `motion` animations use `<MotionConfig reducedMotion="user">`. Spinners are `aria-hidden` next to text that says the same thing. |
+
+### Operational edge cases and failure modes
+
+| Case | Behaviour |
+|------|-----------|
+| Submit with several invalid fields | One assertive announcement listing every message; focus goes to the first. The listener does not have to tab through the form to find out what went wrong. |
+| Fix one field, leave another invalid | The summary is rebuilt from the remaining errors on the next submit; the fixed field loses `aria-invalid`. |
+| Double Enter while creating | The second submit is ignored (`loading` guard), and the button never loses focus. |
+| API down during create | Field errors are already clear; `ApiErrorState` appears with its own alert. The toast is still shown for sighted users. |
+| Retry fails again | The alert text changes in place; focus stays on Retry. |
+| Reduced motion with JS animation | `MotionConfig` skips transforms; content still fades in, so nothing stays invisible. `transitionend`/`animationend` still fire because durations are near zero, not `none`. |
+| Print / PDF of the proof | The caption uses an inline `.visually-hidden` class, so it is not printed but is read by a screen reader in the print preview window. |
+| Test environment | jsdom does no layout, so focus-ring visibility, reflow and real reduced-motion rendering stay in the manual pass below. |
+
+### Rollback
+
+Every change is presentational or additive: no API, schema, stored record or
+reducer state changes. To roll back, revert the form summary region and the
+`setErrors({})` line in `InvoiceForm.tsx`, the `aria-disabled` swaps in
+`InvoiceForm.tsx`, `ApiErrorState.tsx` and the dashboard, the proof table
+caption in `lib/export.ts`/`lib/export.js`, and the `MotionConfig` wrapper in
+`app/page.tsx`, then delete `tests/a11y-regression-flows.test.js`. The
+reduced-motion CSS and the other restored rules predate this issue and should
+stay.
+
+### Restored after the #328 merge
+
+#328 re-applied a stale branch over the frontend. The core pages stopped
+compiling, and earlier accessibility work was silently reverted. Because the
+pages did not compile, `a11y-core-pages.test.js` could not load, so nothing
+reported it. These were restored from `26edbb8` (the last commit before #328)
+while keeping #328's real additions (dashboard "Load more", `PayStatusRegion`,
+the `Boundary` wrappers, the payment-button account-switch guard, the form error
+and print styles):
+
+- `<main id={MAIN_CONTENT_ID} tabIndex={-1}>` skip-link targets and the page
+  `h1`s on the landing, dashboard, invoice and pay pages; the layout skip link,
+  `Toaster closeButton` and `WalletSessionSync`.
+- The dashboard result-count live region and the labelled search field.
+- Accessible names and `aria-hidden` icons on the invoice header and cards.
+- `aria-disabled` + `aria-describedby` reasons on unavailable email buttons.
+- The asset `<select>` id that its `<label>` points at.
+- `[tabindex='-1']` focus rule, disabled-button contrast tokens and the
+  reduced-motion block in `globals.css`.
+- Missing imports and helpers that made components throw at render
+  (`UserProfile`, `PaymentButton`, `PaymentStatus`, `PaymentReceipt`,
+  `invoice-lifecycle.js`, `use-payment-page.ts`, `export.ts`).
+
 ## Manual verification
 
 Run `npm run dev` in `frontend/` (the MVP backend or mock API is fine) and check:
@@ -133,3 +202,11 @@ Run `npm run dev` in `frontend/` (the MVP backend or mock API is fine) and check
    QR-code fallback, and confirm focus is still on the button. Approve a real
    testnet payment. Hear "Verifying…" and then "Payment verified…", with focus
    on the payment proof.
+7. **Dense form and recovery (screen reader on):** leave the amount empty, type
+   `nope` as your email and `a@b` as the client email, press Enter. Hear
+   "Invoice not created. 3 fields need attention…" once, with focus on the
+   amount. Fix all three and stop the backend before resubmitting: the fields
+   are no longer announced as invalid and the API error is announced. Press
+   Retry from the keyboard: focus stays on it while "Retrying..." shows.
+8. **Reduced motion:** enable "Reduce motion" in the OS. The landing hero no
+   longer slides in, and the Retry/Create spinners do not spin.

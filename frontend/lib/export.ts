@@ -1,4 +1,5 @@
 import { format } from 'date-fns';
+import { toast } from 'sonner';
 import {
   assertPaymentProofAvailable,
   canExportPaymentProof,
@@ -157,6 +158,29 @@ export function downloadInvoiceCSV(invoices: Invoice[], filename?: string): void
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Late-payment notice for the printed proof and the on-page receipt. Restored
+ * from a6fea13: a merge kept the calls in generateInvoicePDF and PaymentReceipt
+ * but dropped this helper and its markup, so both threw a ReferenceError.
+ */
+export function latePaymentWarning(
+  invoice: Pick<Invoice, 'latePaymentWarningCode'>
+): { title: string; body: string } | null {
+  if (invoice.latePaymentWarningCode === 'PAYMENT_RECEIVED_AFTER_CANCEL') {
+    return {
+      title: 'Payment received after cancellation',
+      body: 'This transaction proves funds reached the seller. Contact the seller to reconcile the payment.',
+    };
+  }
+  if (invoice.latePaymentWarningCode === 'PAYMENT_RECEIVED_AFTER_EXPIRY') {
+    return {
+      title: 'Payment received after invoice expiry',
+      body: 'This transaction proves funds reached the seller after the original payment window.',
+    };
+  }
+  return null;
 }
 
 /**
@@ -354,6 +378,18 @@ export function generateInvoicePDF(invoice: Invoice): string {
       color: #92400e;
       line-height: 1.4;
     }
+    /* Names the details table for screen readers without changing the printed layout. */
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   </style>
 </head>
 <body>
@@ -408,9 +444,12 @@ export function generateInvoicePDF(invoice: Invoice): string {
     <div class="amount-asset">${escapeHtml(invoice.assetCode || '')}</div>
   </div>
 
+  ${warning ? `<div class="late-warning" role="note"><p><strong>${escapeHtml(warning.title)}</strong></p><p>${escapeHtml(warning.body)}</p></div>` : ''}
+
   ${invoice.description ? `<div class="info-section" style="margin-bottom: 20px;"><h2>Description</h2><p style="color: #1f2937; line-height: 1.6;">${escapeHtml(invoice.description)}</p></div>` : ''}
 
   <table class="details-table">
+    <caption class="visually-hidden">Payment proof details</caption>
     <tr><th scope="row">Invoice ID</th><td style="font-family: monospace; font-size: 12px;">${escapeHtml(invoice.id)}</td></tr>
     <tr><th scope="row">Memo</th><td style="font-family: monospace;">${escapeHtml(invoice.memo)}</td></tr>
     <tr><th scope="row">Seller Address</th><td style="font-family: monospace; font-size: 11px; word-break: break-all;">${escapeHtml(invoice.sellerPublicKey)}</td></tr>
@@ -538,4 +577,12 @@ export function shareInvoiceByEmail(invoice: Invoice): void {
     throw new Error('Client email address is not valid');
   }
   window.location.href = mailtoLink;
+}
+
+/**
+ * Opens a mail draft with the payment proof link for the payer. Restored from
+ * 26edbb8: InvoiceCard and PaymentReceipt import it, and #328 dropped it.
+ */
+export function emailPaymentProof(invoice: Invoice, baseUrl?: string): string {
+  return openProofMailto(invoice, baseUrl);
 }

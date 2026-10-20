@@ -10,6 +10,7 @@ import PayMemoBlock from '@/components/PayMemoBlock';
 import PayVerifyPanel from '@/components/PayVerifyPanel';
 import PayProofPanel from '@/components/PayProofPanel';
 import PayMonitorPanel from '@/components/PayMonitorPanel';
+import PaymentResultPanel from '@/components/PaymentResultPanel';
 import PayStatusRegion from '@/components/PayStatusRegion';
 import QRCodeDisplay from '@/components/QRCodeDisplay';
 import PaymentButton from '@/components/PaymentButton';
@@ -17,9 +18,8 @@ import WalletConnect from '@/components/WalletConnect';
 import FreighterInstallPrompt from '@/components/FreighterInstallPrompt';
 import MobilePaymentFallback from '@/components/MobilePaymentFallback';
 import ApiErrorState from '@/components/ApiErrorState';
-import { detectDeviceContext } from '@/lib/mobile-detection';
 import { copyToClipboard, formatAmount } from '@/lib/utils';
-import { openInvoicePDF, shareInvoiceByEmail } from '@/lib/export';
+import { emailPaymentProof, openInvoicePDF, shareInvoiceByEmail } from '@/lib/export';
 import { getPayPageView, getPayPageWalletGate } from '@/lib/payment-page-state';
 import { memoPaymentHint } from '@/lib/pay-memo-hint';
 import { PAYMENT_STATUS_POLL_INTERVAL_MS } from '@/lib/api';
@@ -73,9 +73,21 @@ export default function PaymentPage() {
       );
     }
     return (
-      <PageMessage>
-        <h1 className="text-2xl font-bold text-red-600">Invoice Not Found</h1>
-      </PageMessage>
+      <main
+        id={MAIN_CONTENT_ID}
+        tabIndex={-1}
+        className="min-h-screen bg-logo-pattern relative flex items-center justify-center"
+      >
+        <div className="orb orb-1"></div>
+        <div className="orb orb-2"></div>
+        <div className="orb orb-3"></div>
+        <div className="card text-center max-w-md relative z-10" role="alert">
+          <h1 className="text-2xl font-bold text-red-700 mb-2">Invoice Not Found</h1>
+          <p className="text-gray-700">
+            {page.loadError ?? 'The invoice you are looking for does not exist.'}
+          </p>
+        </div>
+      </main>
     );
   }
 
@@ -109,116 +121,36 @@ export default function PaymentPage() {
   const amountLabel = describeAmount(formatAmount(invoice.amount, 7), invoice.assetCode);
 
   return (
-    <main id="main-content" className="min-h-screen bg-logo-pattern relative py-8 sm:py-12 px-4">
+    <div className="min-h-screen bg-logo-pattern relative py-8 sm:py-12 px-4">
+      <div className="orb orb-1"></div>
+      <div className="orb orb-2"></div>
+      <div className="orb orb-3"></div>
       <PayPageHeader
         wallet={page.wallet}
       />
-      <div className="max-w-4xl mx-auto relative z-10 pt-20">
-        <PayStatusRegion state={page.paymentState} />
-        {page.loadError && (
-          <div className="mb-6">
-            <ApiErrorState message={page.loadError} onRetry={() => void page.reload()} compact />
+      <div className="max-w-4xl mx-auto relative z-10">
+        <main id={MAIN_CONTENT_ID} tabIndex={-1} className="pt-20">
+          <PayStatusRegion state={page.paymentState} />
+          {page.loadError && (
+            <div className="mb-6">
+              <ApiErrorState message={page.loadError} onRetry={() => void page.reload()} compact />
+            </div>
+          )}
+          <div className="text-center mb-10 sm:mb-12">
+            <p className="pay-page-kicker">
+              {view.expired ? 'Expired Invoice' : view.cancelled ? 'Cancelled Invoice' : 'Secure Payment'}
+            </p>
+            <h1 className="text-4xl sm:text-5xl font-bold text-[var(--ink)] mb-3">
+              {view.expired ? 'Invoice Expired' : view.cancelled ? 'Invoice Cancelled' : 'Complete Payment'}
+            </h1>
+            <p className="text-xl text-[var(--muted)]">
+              {view.expired
+                ? 'Payment is no longer available'
+                : view.cancelled
+                ? 'This invoice was cancelled by the seller'
+                : 'Pay with your Stellar wallet'}
+            </p>
           </div>
-        )}
-        <div className="text-center mb-10 sm:mb-12">
-          <p className="pay-page-kicker">{view.expired ? 'Expired Invoice' : 'Secure Payment'}</p>
-          <h1 className="text-4xl sm:text-5xl font-bold text-[var(--ink)] mb-3">
-            {view.expired ? 'Invoice Expired' : 'Complete Payment'}
-          </h1>
-          <p className="text-xl text-[var(--muted)]">
-            {view.expired ? 'Payment is no longer available' : 'Pay with your Stellar wallet'}
-          </p>
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
-          <div className="space-y-6">
-            <PayAmountBlock invoice={invoice} />
-            <PayMemoBlock invoice={invoice} onCopy={copy} />
-          </div>
-          <div className="space-y-6">
-            {view.showProof && (
-              <PayProofPanel invoice={invoice} onDownload={download} onEmail={email} />
-            )}
-            {view.expired && (
-              <PageMessage>
-                <p className="text-red-700 font-semibold">
-                  This invoice has expired and can no longer be paid.
-                </p>
-              </PageMessage>
-            )}
-            {view.showPaymentControls && (
-              <>
-                <section aria-label="Stellar payment QR code" className="card text-center">
-                  <h3 className="text-lg font-semibold mb-4">Scan QR Code</h3>
-                  <QRCodeDisplay
-                    value={page.paymentInfo?.stellarQrCode || page.paymentInfo?.paymentUrl || ''}
-                    title=""
-                    size={220}
-                  />
-                  <p className="text-sm text-gray-600 mt-4">
-                    Scan with your Stellar wallet app to pay instantly.
-                  </p>
-                </section>
-                <section aria-labelledby="wallet-pay-title" className="card">
-                  <h3 id="wallet-pay-title" className="text-xl font-semibold text-center mb-4">
-                    Pay with Wallet
-                  </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-                    <PayerField
-                      id="payer-name"
-                      label="Your name (optional)"
-                      value={page.payerName}
-                      onChange={page.setPayerName}
-                    />
-                    <PayerField
-                      id="payer-email"
-                      label="Your email (optional)"
-                      value={page.payerEmail}
-                      onChange={page.setPayerEmail}
-                      type="email"
-                    />
-                  </div>
-                  <div className="flex justify-center mb-4">
-                    <WalletConnect onConnect={page.setWallet} />
-                  </div>
-                  <PaymentButton
-                    destination={invoice.sellerPublicKey}
-                    amount={String(invoice.amount)}
-                    memo={invoice.memo}
-                    assetCode={invoice.assetCode}
-                    assetIssuer={invoice.assetIssuer}
-                    invoiceId={invoice.id}
-                    payerName={page.payerName}
-                    payerEmail={page.payerEmail}
-                    invoiceStatus={view.expired ? 'EXPIRED' : invoice.status}
-                    onStart={() => page.dispatch({ type: 'PAY_STARTED' })}
-                    onSuccess={(txHash) => {
-                      page.dispatch({ type: 'PAY_SENT', txHash });
-                      void page.reload();
-                    }}
-                    onError={(error) => page.dispatch({ type: 'PAY_FAILED', error })}
-                  />
-                </section>
-                <PayMonitorPanel
-                  active={page.monitoring}
-                  intervalMs={
-                    page.paymentInfo?.statusPollingIntervalMs ?? PAYMENT_STATUS_POLL_INTERVAL_MS
-                  }
-                />
-                <PayVerifyPanel
-                  txHash={page.txHash}
-                  verifying={page.verifying}
-                  error={page.verifyError}
-                  onChange={page.setTxHash}
-                  onVerify={page.verify}
-                />
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    </main>
-  );
-}
 
           <div className="mb-6">
             <PaymentResultPanel state={page.payment} />
@@ -297,9 +229,6 @@ export default function PaymentPage() {
                           page.paymentInfo?.paymentUrl ||
                           (typeof window !== 'undefined' ? window.location.href : '')
                         }
-                        onCopy={(text, label) => {
-                          page.dispatch({ type: 'COPIED', key: label });
-                        }}
                       />
                       <div className="text-center">
                         <button
@@ -399,8 +328,9 @@ export default function PaymentPage() {
                   <PayVerifyPanel
                     txHash={page.txHash}
                     verifying={page.verifying}
+                    error={page.verifyError}
                     onChange={page.setTxHash}
-                    onVerify={() => void page.verify()}
+                    onVerify={page.verify}
                   />
                 </>
               )}

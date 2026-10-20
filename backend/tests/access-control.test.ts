@@ -26,6 +26,8 @@ import {
 import { createAuthRouter } from '../src/routes/auth.routes.ts';
 import { createInvoiceRouter } from '../src/routes/invoice.routes.ts';
 import { createPaymentMonitorRouter } from '../src/routes/payment-monitor.routes.ts';
+import { createNotificationRouter } from '../src/routes/notification.routes.ts';
+import { NotificationService } from '../src/notifications/notification-service.ts';
 import { InvoiceMemoryService } from '../src/services/invoice-memory.service.ts';
 import { MemoryInvoiceStorage } from '../src/storage/memory-invoice-storage.ts';
 import { MemoryStorage } from '../src/storage/memory-storage.ts';
@@ -66,6 +68,7 @@ describe('role and permission table', () => {
       'invoice:email',
       'invoice:deliveries',
       'stellar:read',
+      'notification:preferences:write',
     ],
     maintainer: [
       'lifecycle:read',
@@ -87,6 +90,7 @@ describe('role and permission table', () => {
       'quota:override',
       'analytics:read',
       'analytics:clear',
+      'notification:preferences:write',
     ],
     service: [
       'lifecycle:read',
@@ -306,6 +310,12 @@ async function startHarness(): Promise<Harness> {
       getStatus: () => ({ state: 'running' }),
     } as any)
   );
+  app.use(
+    '/api',
+    createNotificationRouter({
+      service: new NotificationService(undefined, undefined, undefined, () => undefined),
+    })
+  );
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
@@ -417,6 +427,16 @@ describe('access control over HTTP', () => {
       permission: 'monitor:sync',
       expect: { anonymous: 401, owner: 403, stranger: 403, maintainer: 200, service: 200 },
       run: (headers) => call(h, 'POST', '/payment/sync', { headers, body: { limit: 1 } }),
+    },
+    {
+      action: 'change the owner\'s notification preferences',
+      permission: 'notification:preferences:write',
+      expect: { anonymous: 401, owner: 200, stranger: 403, maintainer: 200, service: 403 },
+      run: (headers) =>
+        call(h, 'PUT', '/notifications/preferences', {
+          headers,
+          body: { recipient: owner.publicKey(), categories: { payment_reminder: false } },
+        }),
     },
   ];
 

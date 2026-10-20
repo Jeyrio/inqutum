@@ -157,8 +157,8 @@ cursor. These semantics are pinned by
 | `GET` | `/api/notifications/unread-count` | none | 200 | Unread notification count for a recipient wallet. |
 | `POST` | `/api/notifications/:id/read` | none | 200, 404 | Mark one notification read. |
 | `POST` | `/api/notifications/read-all` | none | 200 | Mark every notification for a recipient read. |
-| `GET` | `/api/notifications/preferences` | none | 200, 400 | Retrieve durable notification routing preferences for a recipient. |
-| `PUT` | `/api/notifications/preferences` | none | 200, 400 | Update durable notification routing preferences for a recipient. |
+| `GET` | `/api/notifications/preferences` | none | 200, 400 | Retrieve durable notification routing preferences for a recipient, plus the `mandatoryCategories` routing always delivers. |
+| `PUT` | `/api/notifications/preferences` | public | 200, 400, 401, 403 | Update notification preferences. The recipient's own wallet session or a maintainer bearer; another wallet or a service token is 403. Strict body, see [NOTIFICATION_PREFERENCES_ROUTING.md](NOTIFICATION_PREFERENCES_ROUTING.md). |
 | `GET` | `/api/notifications/routing-audit` | none | 200, 400 | Retrieve routing and override audit trail for a recipient. |
 | `POST` | `/api/exports` | none | 201, 400, 403, 500, 503 | Generate an export artifact. Returns an expiring download handle. |
 | `GET` | `/api/exports/:id` | none | 200, 400, 404, 410 | Download an export artifact. 410 once it has expired. |

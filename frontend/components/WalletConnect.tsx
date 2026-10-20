@@ -16,7 +16,7 @@ import {
 import { useWalletStore } from '@/lib/store';
 import { EXTERNAL_WINDOW_FEATURES, explorerAccountUrl } from '@/lib/safe-content.js';
 import { paymentMonitor } from '@/lib/payment-monitor';
-import { walletGate } from '@/lib/freighter-availability';
+import { networkLabel, walletGate } from '@/lib/freighter-availability';
 import { Wallet, LogOut, Loader2, ExternalLink, Bell, BellOff, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatAddress } from '@/lib/utils';

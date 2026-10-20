@@ -29,10 +29,22 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${GeistSans.variable} ${instrumentSerif.variable}`}>
       <body className={`${GeistSans.className} antialiased`}>
-        <a href="#main-content" className="skip-link">
+        {/*
+          First focusable element on every page, so a keyboard user can jump the
+          fixed header — which holds the wallet control on all four routes —
+          instead of tabbing through it on every navigation. Each page provides
+          the matching `<main id={MAIN_CONTENT_ID} tabIndex={-1}>` target.
+        */}
+        <a href={`#${MAIN_CONTENT_ID}`} className="skip-link">
           Skip to main content
         </a>
-        <Toaster position="top-right" richColors />
+        {/*
+          Toasts are the only feedback for several actions, so they need to reach
+          a screen reader. Sonner renders its own polite live region; naming the
+          region keeps it distinguishable from the pages' own status regions.
+        */}
+        <Toaster position="top-right" richColors closeButton />
+        <WalletSessionSync />
         <ApiStatusBanner />
         <FreighterNetworkListener />
         {children}

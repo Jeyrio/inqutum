@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { motion } from 'motion/react';
+import { MotionConfig, motion } from 'motion/react';
 // InvoiceForm surfaces submit failures through apiErrorMessage, which maps any
 // stable verification code to one canonical message across the whole app.
 import InvoiceForm from '@/components/InvoiceForm';
@@ -56,6 +56,9 @@ export default function HomePage() {
   };
 
   return (
+    // `reducedMotion="user"` makes the hero entrance and scroll reveals honour
+    // prefers-reduced-motion: transforms are skipped, opacity still fades in.
+    <MotionConfig reducedMotion="user">
     <div className="min-h-screen bg-[var(--paper)] text-[var(--ink)]">
       <header className="fixed top-0 left-0 right-0 z-50 premium-header">
         <div className="max-w-6xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between">
@@ -78,8 +81,8 @@ export default function HomePage() {
         </div>
       </header>
 
-      <main id="main-content">
-
+      {/* The skip link in the root layout targets this. */}
+      <main id={MAIN_CONTENT_ID} tabIndex={-1}>
       {/* Hero — one composition */}
       <section className="relative min-h-[100svh] flex flex-col justify-center hero-atmosphere overflow-hidden" aria-labelledby="hero-heading">
         <div className="hero-grain" aria-hidden />
@@ -89,7 +92,14 @@ export default function HomePage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
           >
-            <h1 className="font-display text-[clamp(3.5rem,12vw,8.5rem)] leading-[0.9] tracking-tight text-[var(--ink)] max-w-4xl">
+            {/*
+              This was a <p> styled to look like a title, which left the landing
+              page with no h1 at all and its heading outline starting at h2.
+            */}
+            <h1
+              id="hero-heading"
+              className="font-display text-[clamp(3.5rem,12vw,8.5rem)] leading-[0.9] tracking-tight text-[var(--ink)] max-w-4xl"
+            >
               Quittance
             </h1>
           </motion.div>
@@ -342,8 +352,6 @@ export default function HomePage() {
       </section>
       </main>
 
-      </main>
-
       <footer className="border-t border-[var(--line)] bg-white">
         <div className="max-w-6xl mx-auto px-5 sm:px-8 py-12 flex flex-col sm:flex-row sm:items-end justify-between gap-8">
           <div>
@@ -373,5 +381,6 @@ export default function HomePage() {
         </div>
       </footer>
     </div>
+    </MotionConfig>
   );
 }

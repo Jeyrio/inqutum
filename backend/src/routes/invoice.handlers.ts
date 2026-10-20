@@ -10,6 +10,7 @@ import stellarService from '../services/stellar.service';
 import { cancelInvoiceSchema, createInvoiceSchema, stellarPublicKeySchema } from '../utils/validation';
 import { generatePaymentQR, generateStellarPaymentQR } from '../utils/qrcode';
 import { sendFailure, sendSuccess, sendVerificationFailure } from '../types/api';
+import { mayAccessSeller, sendForbiddenOwnership } from '../middleware/access-control';
 import { INVOICE_STATUSES, type InvoiceStatus, type InvoiceStorage, type StoredInvoice } from '../storage/invoice-storage';
 import { decodeInvoiceCursor, encodeInvoiceCursor } from '../storage/invoice-cursor';
 import { STELLAR_NETWORK } from '../config/stellar';

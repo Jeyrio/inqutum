@@ -4,7 +4,7 @@ import { formatAmount, formatDate } from '@/lib/utils';
 import { describeAmount } from '@/lib/a11y';
 import { Check, Download, ExternalLink, FileText, Mail } from 'lucide-react';
 import AssetLogo from './AssetLogo';
-import { openInvoicePDF, emailPaymentProof } from '@/lib/export';
+import { latePaymentWarning, openInvoicePDF, emailPaymentProof } from '@/lib/export';
 import { canSendProofEmail, getProofMailtoRecipient } from '@/lib/mailto-delivery';
 import { toast } from 'sonner';
 import type { PayPageInvoice } from './pay-page.types';
@@ -17,6 +17,7 @@ interface PaymentReceiptProps {
 }
 
 function PaymentReceipt({ invoice }: PaymentReceiptProps) {
+  const warning = latePaymentWarning(invoice);
   const handleDownloadPDF = () => {
     openInvoicePDF(invoice as any);
     toast.success('Opening payment proof');
@@ -238,7 +239,7 @@ Stellar Blockchain Payment System
         <button
           type="button"
           onClick={handleDownloadPDF}
-          className="btn btn-primary w-full flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2" aria-label="Download Payment Proof PDF" aria-haspopup="dialog"
+          className="btn btn-primary w-full flex items-center justify-center gap-2"
         >
           <FileText className="w-5 h-5" aria-hidden="true" />
           Download Proof
@@ -251,12 +252,11 @@ Stellar Blockchain Payment System
         */}
         <button
           type="button"
-          onClick={!invoice.customerEmail ? undefined : handleEmailProof}
-          disabled={!invoice.customerEmail}
-          title={!invoice.customerEmail ? 'No client email on this invoice' : 'Email Proof'}
-          className={`btn btn-secondary w-full flex items-center justify-center gap-2 ${
-            !invoice.customerEmail ? 'opacity-50 cursor-not-allowed' : ''
-          }`}
+          onClick={canEmail ? handleEmailProof : undefined}
+          aria-disabled={!canEmail}
+          aria-describedby={canEmail ? undefined : emailReasonId}
+          aria-label={canEmail && proofRecipient ? `Email payment proof to ${proofRecipient}` : 'Email Proof'}
+          className="btn btn-secondary w-full flex items-center justify-center gap-2"
         >
           <Mail className="w-5 h-5" aria-hidden="true" />
           Email Proof

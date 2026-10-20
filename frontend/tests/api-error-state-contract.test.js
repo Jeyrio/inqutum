@@ -8,6 +8,9 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'components', 'ApiErro
 test('API error state exposes an alert and retry affordance', () => {
   assert.match(source, /role="alert"/);
   assert.match(source, /aria-live="assertive"/);
-  assert.match(source, /disabled=\{retrying\}/);
+  // Busy is aria-disabled so the focused retry button is not dropped to <body>.
+  assert.match(source, /aria-disabled=\{retrying\}/);
+  assert.match(source, /aria-busy=\{retrying\}/);
+  assert.doesNotMatch(source, /\sdisabled=\{retrying\}/);
   assert.match(source, /Retrying\.\.\./);
 });

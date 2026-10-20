@@ -56,9 +56,29 @@ body {
     box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--teal);
   }
 
-  /* Solid teal ring: the old 40% alpha ring fell below the 3:1 non-text contrast minimum. */
-  *:focus-visible {
-    box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--teal);
+  /*
+   * Panels that take focus programmatically when an async result arrives are
+   * targets, not controls. They get no ring — the announcement is the feedback,
+   * and a ring around a whole card reads as a bug.
+   */
+  [tabindex='-1']:focus,
+  [tabindex='-1']:focus-visible {
+    outline: none;
+    box-shadow: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
@@ -90,7 +110,24 @@ body {
   }
 
   .btn {
-    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-md text-sm font-medium transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:cursor-wait;
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-md text-sm font-medium transition-colors duration-150;
+  }
+
+  /*
+   * Disabled buttons used to be `opacity: .5`, which multiplies the label's
+   * contrast by roughly a half and put every disabled control under 3:1 — axe
+   * flagged them, and they were genuinely hard to read. Explicit tokens keep a
+   * disabled label at 7:1 while still reading as unavailable.
+   *
+   * `aria-disabled` is styled the same as `disabled` because the controls that
+   * carry a reason worth hearing use `aria-disabled` and stay focusable.
+   */
+  .btn:disabled,
+  .btn[aria-disabled='true'] {
+    background-color: var(--disabled-surface) !important;
+    border-color: var(--line) !important;
+    color: var(--disabled-ink) !important;
+    cursor: not-allowed;
   }
 
   .btn-primary {
@@ -150,11 +187,6 @@ body {
   .field-error {
     @apply mt-1 text-sm;
     color: #b91c1c;
-  }
-
-  .skip-link {
-    @apply sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:px-4 focus:py-2 focus:rounded-md focus:bg-white;
-    color: var(--ink);
   }
 
   .label {

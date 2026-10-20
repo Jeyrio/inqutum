@@ -6,8 +6,14 @@
  *  - Mandatory lifecycle & security alerts CANNOT be suppressed by user preferences.
  *  - Optional notifications (reminders, digests) respect user preferences.
  *  - All routing decisions (delivered, suppressed, mandatory override) are auditable.
+ *
+ * Participant preference controls (Issue #193):
+ *  - Categories are explicitly classified as mandatory or optional below.
+ *  - Preference patches are validated strictly, so a typo or a non-boolean can
+ *    never be stored and then read back as a successful opt-out.
  */
 
+import { z } from 'zod';
 import { stellarPublicKeySchema } from '../utils/validation';
 
 export type NotificationChannel = 'in_app' | 'email';
@@ -35,6 +41,68 @@ export interface RecipientNotificationPreferences {
     marketing_digest: boolean;
   };
   updatedAt: string;
+}
+
+/**
+ * Categories whose alerts are always delivered. A recipient may still store
+ * `false` for them (older clients do), but routing ignores it and records a
+ * `MANDATORY_OVERRIDE`, so the opt-out is visible in the audit trail rather
+ * than silently honoured or silently rejected.
+ */
+export const MANDATORY_NOTIFICATION_CATEGORIES: readonly NotificationCategory[] = [
+  'invoice_lifecycle',
+  'payment_recovery',
+  'security_alert',
+];
+
+/** Categories whose alerts are delivered only when the recipient allows them. */
+export const OPTIONAL_NOTIFICATION_CATEGORIES: readonly NotificationCategory[] = [
+  'payment_reminder',
+  'marketing_digest',
+];
+
+export function isMandatoryCategory(category: NotificationCategory): boolean {
+  return MANDATORY_NOTIFICATION_CATEGORIES.includes(category);
+}
+
+/**
+ * The only mutable preference fields. Objects are strict on purpose: an
+ * unknown key (`emial`, `reminders`) or a string `"false"` is a 400, not a
+ * no-op that looks like it worked.
+ */
+export const notificationPreferencePatchSchema = z
+  .object({
+    channels: z
+      .object({
+        in_app: z.boolean().optional(),
+        email: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    categories: z
+      .object({
+        invoice_lifecycle: z.boolean().optional(),
+        payment_recovery: z.boolean().optional(),
+        security_alert: z.boolean().optional(),
+        payment_reminder: z.boolean().optional(),
+        marketing_digest: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (patch) => Object.keys(patch.channels ?? {}).length + Object.keys(patch.categories ?? {}).length > 0,
+    'at least one channel or category preference is required'
+  );
+
+export type NotificationPreferencePatch = z.infer<typeof notificationPreferencePatchSchema>;
+
+/** Mandatory categories the recipient has switched off; routing overrides each of them. */
+export function overriddenMandatoryCategories(
+  preferences: RecipientNotificationPreferences
+): NotificationCategory[] {
+  return MANDATORY_NOTIFICATION_CATEGORIES.filter((category) => !preferences.categories[category]);
 }
 
 export interface RoutingAuditRecord {
@@ -120,10 +188,7 @@ export interface NotificationPreferenceStore {
   getPreferences(recipient: string): RecipientNotificationPreferences;
   savePreferences(
     recipient: string,
-    patch: {
-      channels?: Partial<RecipientNotificationPreferences['channels']>;
-      categories?: Partial<RecipientNotificationPreferences['categories']>;
-    }
+    patch: NotificationPreferencePatch
   ): RecipientNotificationPreferences;
   recordAudit(record: RoutingAuditRecord): void;
   getAuditRecords(recipient: string): RoutingAuditRecord[];
@@ -144,10 +209,7 @@ export class MemoryNotificationPreferenceStore implements NotificationPreference
 
   savePreferences(
     recipient: string,
-    patch: {
-      channels?: Partial<RecipientNotificationPreferences['channels']>;
-      categories?: Partial<RecipientNotificationPreferences['categories']>;
-    }
+    patch: NotificationPreferencePatch
   ): RecipientNotificationPreferences {
     const current = this.getPreferences(recipient);
     const updated: RecipientNotificationPreferences = {
