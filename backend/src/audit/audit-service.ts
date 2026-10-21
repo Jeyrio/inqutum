@@ -26,6 +26,13 @@ export type AuditAction =
   | 'IMPERSONATION_ACTION_BLOCKED'
   | 'CAPABILITY_ISSUED'
   | 'CONFIG_CHANGED'
+  // Lifecycle archival (#197) and signed approvals (#196)
+  | 'INVOICE_ARCHIVED'
+  | 'INVOICE_RESTORED'
+  | 'APPROVAL_ISSUED'
+  | 'APPROVAL_REJECTED'
+  | 'PROTECTED_ACTION_EXECUTED'
+  | 'PROTECTED_ACTION_FAILED'
   // Operational freeze windows and emergency bypasses (#194)
   | 'FREEZE_WINDOW_CREATED'
   | 'FREEZE_WINDOW_REVOKED'

@@ -64,6 +64,19 @@ import {
   type RepairPhase,
 } from '../ops/resumable-repair.service';
 import { pool } from '../config/database';
+import { auditEventsToActivity, buildAnomalyReport, type AnomalyOptions } from '../ops/anomaly-report';
+import {
+  SignedApprovalError,
+  SignedApprovalService,
+  signedApprovalServiceFromEnv,
+  type SignedApproval,
+} from '../ops/signed-approval';
+import {
+  ArchiveError,
+  InvoiceArchiveService,
+  type ArchiveLinkProvider,
+} from '../domain/invoice-archival';
+import { disputeService } from '../services/dispute.service';
 
 export interface OpsRouterOptions {
   storage: InvoiceStorage;
@@ -96,7 +109,34 @@ export interface OpsRouterOptions {
   risk?: CounterpartyRiskService;
   /** Compliance snapshot store (#192). Defaults to the process-wide store. */
   snapshots?: ComplianceSnapshotStore;
+  /**
+   * Signed approvals for protected actions (#196). Defaults to one keyed by
+   * SIGNED_APPROVAL_SECRET; when that is unset, protected routes return 403.
+   */
+  signedApprovals?: SignedApprovalService | null;
+  /** Invoice archival (#197). Defaults to an in-process registry over `storage`. */
+  archive?: InvoiceArchiveService;
+  /** Tuning for the anomaly report (#195). */
+  anomaly?: Partial<AnomalyOptions>;
 }
+
+/** Counts unresolved disputes for an invoice so archival can refuse while one is open. */
+const disputeLinks: ArchiveLinkProvider = {
+  summarize(invoiceId) {
+    const refs: Array<{ kind: string; id: string }> = [];
+    let open = 0;
+    for (let offset = 0; ; offset += 200) {
+      const page = disputeService.list({ offset, limit: 200 }, { role: 'admin' });
+      for (const d of page.disputes) {
+        if (d.invoiceId !== invoiceId) continue;
+        refs.push({ kind: 'dispute', id: d.id });
+        if (d.status !== 'RESOLVED' && d.status !== 'REJECTED') open++;
+      }
+      if (offset + 200 >= page.total) break;
+    }
+    return { openDisputes: open, references: refs };
+  },
+};
 
 const defaultFreezeService = new FreezeWindowService({
   onAudit: (record) => {
@@ -175,6 +215,33 @@ export function createOpsRouter(options: OpsRouterOptions): Router {
       events: () => auditStore.listChronological(),
     });
   const repairService = options.repairService ?? new ResumableRepairService({ db: pool });
+  const signed =
+    options.signedApprovals === undefined
+      ? signedApprovalServiceFromEnv(process.env, {
+          onAudit: (r) =>
+            recordAuditEvent({
+              action: r.type === 'APPROVAL_CONSUMED' ? 'PROTECTED_ACTION_EXECUTED' : r.type,
+              actor: { type: 'maintainer', id: r.actor },
+              scope: { entityType: 'system', entityId: r.target },
+              reason: `${r.action}${r.code ? `: ${r.code}` : ''}`,
+              metadata: { protectedAction: r.action, approvalIds: r.approvalIds, signers: r.signers, outcome: r.type === 'APPROVAL_REJECTED' || r.type === 'PROTECTED_ACTION_FAILED' ? 'failed' : 'ok' },
+            }),
+        })
+      : options.signedApprovals;
+  const archive =
+    options.archive ??
+    new InvoiceArchiveService({
+      storage: options.storage,
+      links: disputeLinks,
+      onTransition: (r, t) =>
+        recordAuditEvent({
+          action: t === 'ARCHIVED' ? 'INVOICE_ARCHIVED' : 'INVOICE_RESTORED',
+          actor: { type: 'maintainer', id: t === 'ARCHIVED' ? r.archivedBy : r.restoredBy ?? 'unknown' },
+          scope: { entityType: 'invoice', entityId: r.invoiceId },
+          reason: t === 'ARCHIVED' ? r.archiveReason : r.restoreReason ?? undefined,
+          metadata: { archivedStatus: r.archivedStatus, references: r.references },
+        }),
+    });
 
   if (approvals && options.jobs) {
     const jobs = options.jobs;
@@ -274,7 +341,9 @@ export function createOpsRouter(options: OpsRouterOptions): Router {
     err instanceof PolicyDryRunError ||
     err instanceof FreezeWindowError ||
     err instanceof CounterpartyRiskError ||
-    err instanceof SnapshotError
+    err instanceof SnapshotError ||
+    err instanceof SignedApprovalError ||
+    err instanceof ArchiveError
       ? fail(res, req, err.httpStatus, err.code, err.message)
       : next(err);
 
@@ -344,6 +413,76 @@ export function createOpsRouter(options: OpsRouterOptions): Router {
     if (!receipt) return fail(res, req, 404, 'RECEIPT_NOT_FOUND', 'Receipt not found');
     res.json({ success: true, data: { receipt, signatureValid: approvals!.verifyReceipt(receipt) }, correlationId: req.correlationId });
   });
+
+  // -- Anomaly report (#195): read-only ----------------------------------------
+
+  router.get('/ops/anomalies', admin, (req, res) => {
+    const events = auditStore.listChronological();
+    const hours = Number(req.query.hours);
+    const since = Number.isFinite(hours) && hours > 0 ? Date.now() - hours * 3_600_000 : 0;
+    const activity = auditEventsToActivity(events).filter((r) => Date.parse(r.timestamp) >= since);
+    res.json({ success: true, data: buildAnomalyReport(activity, options.anomaly), correlationId: req.correlationId });
+  });
+
+  // -- Signed approvals (#196) and lifecycle archival (#197) -------------------
+
+  const needSigned = (req: any, res: any, next: any) =>
+    signed ? next() : fail(res, req, 403, 'SIGNED_APPROVALS_DISABLED', 'Set SIGNED_APPROVAL_SECRET to enable protected actions');
+
+  router.post('/ops/signed-approvals', admin, needSigned, (req, res, next) => {
+    try {
+      const approval = signed!.issue({
+        action: String(req.body?.action ?? ''),
+        target: String(req.body?.target ?? ''),
+        actor: String(req.body?.actor ?? ''),
+        signer: String(req.body?.signer ?? ''),
+        reason: String(req.body?.reason ?? ''),
+        params: req.body?.params && typeof req.body.params === 'object' ? req.body.params : {},
+        ttlMs: typeof req.body?.ttlMs === 'number' ? req.body.ttlMs : undefined,
+      });
+      res.status(201).json({ success: true, data: approval, correlationId: req.correlationId });
+    } catch (err) {
+      knownError(req, res, err, next);
+    }
+  });
+
+  router.get('/ops/invoices/:id/archive', admin, async (req, res, next) => {
+    try {
+      const eligibility = await archive.checkEligibility(req.params.id);
+      res.json({ success: true, data: { state: archive.state(req.params.id), ...eligibility }, correlationId: req.correlationId });
+    } catch (err) {
+      knownError(req, res, err, next);
+    }
+  });
+
+  router.get('/ops/invoices/:id/history', admin, async (req, res, next) => {
+    try {
+      res.json({ success: true, data: await archive.historicalView(req.params.id), correlationId: req.correlationId });
+    } catch (err) {
+      knownError(req, res, err, next);
+    }
+  });
+
+  for (const transition of ['archive', 'restore'] as const) {
+    router.post(`/ops/invoices/:id/${transition}`, admin, needSigned, async (req, res, next) => {
+      try {
+        const actor = String(req.body?.actor ?? '');
+        const reason = String(req.body?.reason ?? '');
+        const result = await signed!.runProtected(
+          {
+            action: `invoice.${transition}`,
+            target: req.params.id,
+            actor,
+            approvals: Array.isArray(req.body?.approvals) ? (req.body.approvals as SignedApproval[]) : undefined,
+          },
+          () => archive[transition](req.params.id, { actor, reason })
+        );
+        res.json({ success: true, data: result, correlationId: req.correlationId });
+      } catch (err) {
+        knownError(req, res, err, next);
+      }
+    });
+  }
 
   // -- Operational freeze windows (#194) -------------------------------------
 

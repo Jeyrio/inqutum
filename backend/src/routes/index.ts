@@ -24,6 +24,7 @@ import { createQuotaRouter } from './quota.routes';
 import { createAnalyticsRouter } from './analytics.routes';
 import { createDisputeRouter } from './dispute.routes';
 import { createRiskRouter } from './risk.routes';
+import { createFeeRouter } from './fee.routes';
 import { createImportRouter } from './import.routes';
 import { createPaymentMonitorRouter } from './payment-monitor.routes';
 
@@ -66,6 +67,9 @@ router.use(createReconciliationRouter({ storage: postgresInvoiceStorage }));
 // Settlement disputes and safe counterparty risk summaries (#190, #191)
 router.use(createDisputeRouter());
 router.use(createRiskRouter());
+
+// Fee quotes before submission (#198)
+router.use(createFeeRouter());
 
 // Stellar routes. These proxy Horizon on the server's quota, so they need a
 // signed-in caller rather than being an open relay.
