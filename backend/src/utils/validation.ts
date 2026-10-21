@@ -41,10 +41,21 @@ const plainText = (max: number, multiline = false) =>
     .transform((value) => sanitizePlainText(value, { multiline }) || undefined);
 
 /**
- * Import key. Bounded to the `invoices.external_id VARCHAR(255)` column, the
- * same limit `imports/import-pipeline.ts` reports per row.
+ * Caller-supplied import key (issue #53).
+ *
+ * Bounded to the `invoices.external_id VARCHAR(255)` column and restricted to
+ * printable characters so a key can be echoed into remediation messages and
+ * compared without normalisation surprises. Matching is case-SENSITIVE, which
+ * matches the case-sensitive partial unique index in db/schema.sql.
  */
-const externalIdSchema = z.string().max(255);
+const externalIdSchema = z
+  .string()
+  .trim()
+  .min(1, 'externalId must not be empty')
+  .max(255, 'externalId must be at most 255 characters')
+  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), {
+    message: 'externalId must not contain control characters',
+  });
 
 export const createInvoiceSchema = z
   .object({

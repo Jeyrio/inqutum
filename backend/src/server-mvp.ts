@@ -26,6 +26,7 @@ import { buildUserSafeErrorResponse, classifyError } from './errors/error-taxono
 import { authenticate, requirePermission } from './middleware/access-control';
 import { createDisputeRouter } from './routes/dispute.routes';
 import { createRiskRouter } from './routes/risk.routes';
+import { createFeeRouter } from './routes/fee.routes';
 
 import { validateEnvironment } from './config/env-validator';
 import { VERIFICATION_CONTRACT_VERSION } from './services/payment-verification';
@@ -95,6 +96,7 @@ app.use('/api', createExportRouter({ storage: memoryInvoiceStorage }));
 // Settlement disputes and safe counterparty risk summaries (#190, #191)
 app.use('/api', createDisputeRouter());
 app.use('/api', createRiskRouter());
+app.use('/api', createFeeRouter());
 
 // Mock Stellar endpoint (MVP only)
 app.get('/api/stellar/account', authenticate(), requirePermission('stellar:read'), (req: Request, res: Response) => {

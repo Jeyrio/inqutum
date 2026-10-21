@@ -449,6 +449,7 @@ Stuck jobs and payments: [`docs/PARTIAL-FAILURES.md`](./docs/PARTIAL-FAILURES.md
 Accessibility conventions and checks: [`docs/ACCESSIBILITY.md`](./docs/ACCESSIBILITY.md).
 Notifications: [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md). Data exports: [`docs/EXPORTS.md`](./docs/EXPORTS.md). Untrusted content and URL handling: [`docs/CONTENT_SAFETY.md`](./docs/CONTENT_SAFETY.md).
 Settlement disputes: [`docs/DISPUTES.md`](./docs/DISPUTES.md). Counterparty risk: [`docs/COUNTERPARTY_RISK.md`](./docs/COUNTERPARTY_RISK.md). Operational freezes: [`docs/FREEZE_WINDOWS.md`](./docs/FREEZE_WINDOWS.md). Compliance snapshots: [`docs/COMPLIANCE_SNAPSHOTS.md`](./docs/COMPLIANCE_SNAPSHOTS.md).
+Anomaly report: [`docs/ANOMALY_REPORT.md`](./docs/ANOMALY_REPORT.md). Signed approvals: [`docs/SIGNED_APPROVALS.md`](./docs/SIGNED_APPROVALS.md). Archival and restore: [`docs/ARCHIVAL.md`](./docs/ARCHIVAL.md). Fee calculation: [`docs/FEE_CALCULATION.md`](./docs/FEE_CALCULATION.md).
 
 ## Tests & CI
 
