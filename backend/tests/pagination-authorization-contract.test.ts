@@ -22,6 +22,7 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { API_CONTRACT, collectRoutes } from '../src/api/contract';
 import { DOMAIN_ERROR_TAXONOMY } from '../src/errors/error-taxonomy';
 import { compareNewestFirst } from '../src/storage/invoice-cursor';
+import { walletAuth } from './fixtures/auth.fixture';
 
 const ADMIN = 'pagination-contract-admin-token';
 const SELLER_A = Keypair.random().publicKey();
@@ -53,8 +54,16 @@ async function call(base: string, method: string, path: string, body?: unknown, 
   return { status: res.status, body: json };
 }
 
+// Listing is owner-scoped (docs/ACCESS-CONTROL.md): each request acts as the
+// wallet it lists.
 const list = (query: Record<string, string | number>) =>
-  call(mvpBase, 'GET', `/api/invoices?${new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]))}`);
+  call(
+    mvpBase,
+    'GET',
+    `/api/invoices?${new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]))}`,
+    undefined,
+    walletAuth(String(query.sellerPublicKey))
+  );
 
 before(async () => {
   Object.assign(process.env, {
@@ -80,13 +89,13 @@ before(async () => {
 
   for (let i = 0; i < A_COUNT + B_COUNT; i++) {
     const seller = i < A_COUNT ? SELLER_A : SELLER_B;
-    const res = await call(mvpBase, 'POST', '/api/invoices', { sellerPublicKey: seller, amount: 10 + i, assetCode: 'XLM' });
+    const res = await call(mvpBase, 'POST', '/api/invoices', { sellerPublicKey: seller, amount: 10 + i, assetCode: 'XLM' }, walletAuth(seller));
     assert.equal(res.status, 201, JSON.stringify(res.body));
     if (seller === SELLER_A) createdA.push({ id: res.body.data.invoice.id, createdAt: res.body.data.invoice.createdAt });
   }
   cancelledA = [createdA[1].id, createdA[4].id];
   for (const id of cancelledA) {
-    assert.equal((await call(mvpBase, 'POST', `/api/invoices/${id}/cancel`, {})).status, 200);
+    assert.equal((await call(mvpBase, 'POST', `/api/invoices/${id}/cancel`, {}, walletAuth(SELLER_A))).status, 200);
   }
 });
 
@@ -215,15 +224,16 @@ describe('authorization boundaries — wallet scoping (#286)', () => {
   });
 
   it('scopes stats to the requesting wallet', async () => {
-    const res = await call(mvpBase, 'GET', `/api/invoices/stats?sellerPublicKey=${SELLER_B}`);
+    const res = await call(mvpBase, 'GET', `/api/invoices/stats?sellerPublicKey=${SELLER_B}`, undefined, walletAuth(SELLER_B));
     assert.equal(res.status, 200);
     const total = res.body.data.reduce((sum: number, row: any) => sum + row.total_invoices, 0);
     assert.equal(total, B_COUNT);
   });
 
   it('requires a wallet: list and stats refuse an unscoped request', async () => {
+    // Authenticated, but naming no wallet: the handler refuses, not the guard.
     for (const path of ['/api/invoices', '/api/invoices/stats']) {
-      const res = await call(mvpBase, 'GET', path);
+      const res = await call(mvpBase, 'GET', path, undefined, walletAuth(SELLER_A));
       assert.equal(res.status, 400);
       assert.equal(res.body.code, 'SELLER_REQUIRED');
       assert.equal(res.body.category, 'AUTHORIZATION');
@@ -259,7 +269,8 @@ describe('authorization boundaries — admin surface (#286)', () => {
     // docs/API_CONTRACTS.md "Known gap". A new admin route without auth fails here.
     assert.deepEqual(
       API_CONTRACT.filter((e) => e.group === 'admin' && e.auth === 'none').map((e) => `${e.method} ${e.path}`).sort(),
-      ['GET /api/email/deliveries', 'GET /api/email/problems', 'POST /api/email/send', 'POST /api/email/webhook', 'POST /api/payment/sync']
+      // POST /api/payment/sync left this list once it was guarded by monitor:sync.
+      ['GET /api/email/deliveries', 'GET /api/email/problems', 'POST /api/email/send', 'POST /api/email/webhook']
     );
   });
 

@@ -101,13 +101,13 @@ forged or expired → 401; wrong scope → 403; already used or in flight → 40
 Without `CAPABILITY_TOKEN_SECRET` these routes return 403
 `CAPABILITIES_DISABLED`. See [CAPABILITY_TOKENS.md](CAPABILITY_TOKENS.md).
 
-> **Known gap.** The public invoice surface authenticates by wallet key rather
-> than by a session, and the `/api/email/*` routes have no auth middleware. Both
-> are recorded here as contract facts rather than hidden; they need a decision
-> from the maintainers before this surface is exposed beyond a trusted network.
-> Anything that mutates state (`verify`, `cancel`, `simulate-payment`) is
-> reachable by anyone who can reach the server, so the Postgres deployment
-> should sit behind an authenticating proxy until that changes.
+> **Known gap.** The `/api/email/*` routes have no auth middleware. This is
+> recorded here as a contract fact rather than hidden; it needs a decision from
+> the maintainers before this surface is exposed beyond a trusted network.
+> The invoice surface is session-authenticated (docs/ACCESS-CONTROL.md): create,
+> list, stats, cancel and audit need the seller's wallet session or an operator
+> token, `simulate-payment` needs a maintainer, and `read`, `payment-info`,
+> `verify` and the invoice email routes stay open to the payer.
 
 ## Pagination
 
@@ -138,15 +138,17 @@ cursor. These semantics are pinned by
 | `GET` | `/` | none | 200 | Server banner: name, version and storage mode. |
 | `GET` | `/api/health` | none | 200 | Liveness plus the storage mode the server is running in. |
 | `GET` | `/api/ready` | none | 200, 503 | Readiness probe. 503 when a dependency is unavailable. |
-| `POST` | `/api/invoices` | none | 201, 400 | Create an invoice. 201 returns the stored invoice. |
-| `GET` | `/api/invoices` | none | 200, 400, 500 | List invoices for a seller. Keyset pagination via `cursor`; `limit` clamped to 1-200. |
-| `GET` | `/api/invoices/stats` | none | 200, 400, 500 | Aggregated counts and revenue per asset for a seller. |
+| `POST` | `/api/invoices` | public | 201, 400, 401, 403 | Create an invoice for the caller's own wallet. 201 returns the stored invoice. |
+| `GET` | `/api/invoices` | public | 200, 400, 401, 403, 500 | List the caller's invoices. Keyset pagination via `cursor`; `limit` clamped to 1-200. |
+| `GET` | `/api/invoices/stats` | public | 200, 400, 401, 403, 500 | Aggregated counts and revenue per asset for the caller's wallet. |
+| `GET` | `/api/invoices/lifecycle` | none | 200 | Invoice statuses and their legal transitions. |
+| `GET` | `/api/invoices/:id/audit` | public | 200, 401, 403, 404, 500 | History of one invoice: owner, maintainer or service. |
 | `GET` | `/api/invoices/:id` | none | 200, 404, 500 | Fetch one invoice by id. |
 | `GET` | `/api/invoices/:id/payment-info` | none | 200, 404, 500 | Payment details needed to settle an invoice (asset, memo, destination). |
 | `GET` | `/api/invoices/:id/email-preview` | none | 200, 404, 500 | Rendered invoice email, as HTML and text, without sending. |
-| `POST` | `/api/invoices/:id/cancel` | none | 200, 400, 404, 409 | Cancel a PENDING invoice. 409 once it is settled. |
+| `POST` | `/api/invoices/:id/cancel` | public | 200, 400, 401, 403, 404, 409 | Cancel one of the caller's PENDING invoices. 409 once it is settled. |
 | `POST` | `/api/invoices/:id/verify` | none | 200, 400, 404, 500 | Verify a submitted payment and settle the invoice. |
-| `POST` | `/api/invoices/:id/simulate-payment` | none | 200, 404, 500 | Mark an invoice paid without contacting the network (sandbox only). |
+| `POST` | `/api/invoices/:id/simulate-payment` | maintainer | 200, 401, 403, 404, 500 | Mark an invoice paid without contacting the network (sandbox only). |
 | `POST` | `/api/invoices/:id/send-email` | none | 200, 400, 404, 409, 422, 500 | Email an invoice to its customer. |
 | `GET` | `/api/invoices/:id/audit-trail` | none | 200, 404, 500 | Activity timeline for a single invoice. |
 | `GET` | `/api/audit/events` | none | 200, 500 | Query audit events across invoices, filtered by type and time. |
@@ -178,11 +180,32 @@ cursor. These semantics are pinned by
 | `POST` | `/api/disputes/:id/reject` | public | 200, 400, 401, 403, 404, 409 | Maintainer rejects the claim. |
 | `POST` | `/api/disputes/:id/reopen` | public | 200, 400, 401, 403, 404, 409 | Opener or maintainer reopens a closed dispute. |
 | `GET` | `/api/risk/counterparty/:subjectId` | public | 200, 401 | Safe risk summary, without scores, factors, signals or thresholds. |
+| `POST` | `/api/auth/session` | none | 200, 400, 401, 429, 503 | Exchange a signed wallet challenge for a session token (Postgres server). |
+| `GET` | `/api/auth/me` | none | 200 | Who the presented credential resolves to, and its permissions. |
+| `GET` | `/api/auth/roles` | none | 200 | The role and permission table (`shared/access-control.ts`). |
+| `POST` | `/api/fees/quote` | none | 200, 400 | Quote the platform fee for an amount and asset. |
 
 ### Admin / maintainer surface
 
 | Method | Path | Auth | Statuses | Purpose |
 | --- | --- | --- | --- | --- |
+| `GET` | `/api/reconciliation` | `maintainer` | 200, 400, 401, 403, 500 | Read-only reconciliation dry run (operators and services). |
+| `GET` | `/api/quotas` | `maintainer` | 200, 401, 403 | Inspect quota usage by actor or resource. |
+| `POST` | `/api/quotas/overrides` | `maintainer` | 200, 400, 401, 403 | Set or remove a quota override. |
+| `POST` | `/api/quotas/reset` | `maintainer` | 200, 400, 401, 403 | Reset quota buckets for an actor. |
+| `GET` | `/api/analytics/summary` | `maintainer` | 200, 400, 401, 403 | Aggregated operation analytics for a time window. |
+| `GET` | `/api/analytics/operations` | `maintainer` | 200, 401, 403 | Analytics operation names that can be queried. |
+| `POST` | `/api/analytics/clear` | `maintainer` | 200, 401, 403 | Clear stored analytics data. |
+| `GET` | `/api/ops/anomalies` | `admin` | 200, 400, 401, 403 | Read-only anomaly report (#195). |
+| `POST` | `/api/ops/signed-approvals` | `admin` | 200, 201, 400, 401, 403, 409 | Record a signed maintainer approval (#196). |
+| `GET` | `/api/ops/invoices/:id/archive` | `admin` | 200, 401, 403, 404 | Archive state of one invoice (#197). |
+| `GET` | `/api/ops/invoices/:id/history` | `admin` | 200, 401, 403, 404 | Archive and restore history of one invoice (#197). |
+| `POST` | `/api/ops/invoices/:id/archive` | `admin` | 200, 400, 401, 403, 404, 409 | Archive an invoice with a signed approval (#197). |
+| `POST` | `/api/ops/invoices/:id/restore` | `admin` | 200, 400, 401, 403, 404, 409 | Restore an archived invoice with a signed approval (#197). |
+| `POST` | `/api/ops/repair-records/jobs` | `admin` | 200, 201, 400, 401, 403 | Start a resumable record repair job. |
+| `GET` | `/api/ops/repair-records/jobs` | `admin` | 200, 401, 403 | List record repair jobs. |
+| `GET` | `/api/ops/repair-records/jobs/:id` | `admin` | 200, 401, 403, 404 | Read one record repair job. |
+| `POST` | `/api/ops/repair-records/jobs/:id/resume` | `admin` | 200, 400, 401, 403, 404, 409 | Resume a paused record repair job. |
 | `POST` | `/api/payment/sync` | `maintainer` | 200, 401, 403, 500 | Run a manual payment-monitor sync sweep (maintainer or service). |
 | `GET` | `/api/payment/monitor/status` | `maintainer` | 200, 401, 403 | Payment monitor checkpoint and last sweep status. |
 | `POST` | `/api/email/send` | none | 200, 400, 409, 422, 429, 502 | Send an email through the configured provider. |
