@@ -9,6 +9,7 @@ import { InvoiceService } from '../src/services/invoice.service.ts';
 import memoryStorage from '../src/storage/memory-storage.ts';
 import type { InvoiceStorage } from '../src/storage/invoice-storage.ts';
 import { compareNewestFirst } from '../src/storage/invoice-cursor.ts';
+import { quotaManager } from '../src/domain/quota-management.ts';
 
 const SELLER_A = 'GB3Q3VRHH3OQDYITTLONDLEHWQGKB27T2BEDSFHIUMOERULVXPDXRKG4';
 const SELLER_B = 'GB6IHEZ4QNOHJZRYRFLOC45P4SK3KKL6KNPI5WEG6FNVSZ2K5FS2MNY7';
@@ -30,6 +31,10 @@ function createRes(): FakeResponse & Response {
     },
     json(payload: any) {
       res.body = payload;
+      return res;
+    },
+    // Handlers set Retry-After on 429s.
+    set() {
       return res;
     },
   };
@@ -93,6 +98,7 @@ function createFakePostgres() {
         prior_status: null,
         late_payment_warning_code: null,
         metadata: null,
+        version: 1,
       };
       rows.push(row);
       return { rows: [clone(row)], rowCount: 1 };
@@ -146,20 +152,17 @@ function createFakePostgres() {
       if (txHash && rows.some(r => r.id !== params[0] && r.payment_tx_hash === txHash)) {
         throw new Error('duplicate key value violates unique constraint "idx_invoices_payment_tx_hash"');
       }
+      // Mirrors InvoiceService.markAsPaid: PENDING and unexpired, optionally
+      // pinned to `version = $6` (optimistic locking).
       const row = rows.find(
         candidate => candidate.id === params[0] &&
-          (
-            (candidate.status === 'PENDING' && new Date(candidate.expires_at).getTime() > Date.now()) ||
-            (candidate.status === 'CANCELLED' && candidate.cancelled_at && Number.isFinite(settledAt.getTime()))
-          )
+          candidate.status === 'PENDING' &&
+          new Date(candidate.expires_at).getTime() > Date.now() &&
+          (!sql.includes('version = $6') || candidate.version === params[5])
       );
       if (!row) {
         return { rows: [], rowCount: 0 };
       }
-      const priorStatus = row.status;
-      const afterCancel =
-        priorStatus === 'CANCELLED' &&
-        settledAt.getTime() >= new Date(row.cancelled_at).getTime();
       Object.assign(row, {
         status: 'PAID',
         payment_tx_hash: params[1],
@@ -167,27 +170,30 @@ function createFakePostgres() {
         payer_name: params[3],
         payer_email: params[4],
         paid_at: new Date(),
-        settled_at: settledAt,
-        settlement_context: afterCancel ? 'AFTER_CANCEL' : 'ON_TIME',
-        prior_status: priorStatus === 'CANCELLED' ? 'CANCELLED' : null,
-        late_payment_warning_code: afterCancel ? 'PAYMENT_RECEIVED_AFTER_CANCEL' : null,
+        version: row.version + 1,
       });
       return { rows: [clone(row)], rowCount: 1 };
     }
 
     if (sql.startsWith("UPDATE invoices SET status = 'CANCELLED'")) {
-      const sellerPublicKey = params[1] ?? null;
+      // Mirrors InvoiceService.cancelInvoice, optionally pinned to `version = $2`.
       const row = rows.find(
         candidate => candidate.id === params[0] &&
           candidate.status === 'PENDING' &&
-          (!sellerPublicKey || candidate.seller_public_key === sellerPublicKey)
+          (!sql.includes('version = $2') || candidate.version === params[1])
       );
       if (!row) {
         return { rows: [], rowCount: 0 };
       }
       row.status = 'CANCELLED';
       row.cancelled_at = new Date();
+      row.version += 1;
       return { rows: [clone(row)], rowCount: 1 };
+    }
+
+    if (sql.startsWith('SELECT version FROM invoices WHERE id =')) {
+      const found = rows.filter(row => row.id === params[0]);
+      return { rows: found.map(row => ({ version: row.version })), rowCount: found.length };
     }
 
     if (sql.startsWith('SELECT COUNT(*) as total_invoices')) {
@@ -289,6 +295,10 @@ function runSharedBackendSuite(name: string, createBackend: () => BackendUnderTe
 
     beforeEach(() => {
       memoryStorage.clear();
+      // The create quota is per seller and process-wide; each case starts fresh.
+      for (const seller of [SELLER_A, SELLER_B]) {
+        quotaManager.reset({ actor: seller, resource: seller }, 'invoice_create');
+      }
       ({ storage, removeInvoice } = createBackend());
       transaction = undefined;
     });
@@ -832,7 +842,7 @@ function runSharedBackendSuite(name: string, createBackend: () => BackendUnderTe
       const txHash = 'f'.repeat(64);
 
       transaction = {
-        transaction: { memo: inv1.memo },
+        transaction: { memo: inv1.memo, memo_type: 'text' },
         operations: [
           {
             type: 'payment',
@@ -862,7 +872,7 @@ function runSharedBackendSuite(name: string, createBackend: () => BackendUnderTe
       );
 
       transaction = {
-        transaction: { memo: inv2.memo },
+        transaction: { memo: inv2.memo, memo_type: 'text' },
         operations: [
           {
             type: 'payment',

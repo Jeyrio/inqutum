@@ -30,6 +30,8 @@ import { InvalidTransitionError, describeLifecycle } from '../../../shared/invoi
 import { cacheVerificationResult } from '../middleware/verify-cache';
 import { emailAntiSpamService } from '../services/email-anti-spam.service';
 import { quotaManager } from '../domain/quota-management';
+import { verifySellerSignature } from '../utils/signature-verification';
+import { canonicalCancelMessage } from '../utils/canonical-serialization';
 import { metrics } from '../observability/telemetry';
 import { exportAuditEvents, AuditAction } from '../audit/audit-service';
 import { classifyError } from '../errors/error-taxonomy';
@@ -68,6 +70,8 @@ export interface InvoiceHandlerOptions {
   notifications?: NotificationService;
   /** Defaults to the process-wide email service. */
   emailService?: EmailService;
+  /** Require an ed25519 seller signature on cancel. Defaults to REQUIRE_CANCEL_SIGNATURE. */
+  requireCancelSignature?: boolean;
 }
 
 export interface InvoiceHandlers {
@@ -578,8 +582,62 @@ export function createInvoiceHandlers(options: InvoiceHandlerOptions): InvoiceHa
       const corrId = req.correlationId || `req-${Date.now().toString(36)}`;
 
       try {
-        const expectedVersion = req.body?.version ?? (req.headers && req.headers['if-match'] ? Number(req.headers['if-match']) : undefined);
         const originalInvoice = await storage.getInvoiceById(req.params.id);
+        if (!originalInvoice) {
+          return sendFailure(res, 404, 'Invoice not found', 'INVOICE_NOT_FOUND');
+        }
+        const bodyCheck = cancelInvoiceSchema.safeParse(req.body ?? {});
+        if (!bodyCheck.success) {
+          return sendFailure(res, 400, 'sellerPublicKey must be a valid Stellar public key', 'INVALID_SELLER_PUBLIC_KEY');
+        }
+
+        // Optional cryptographic proof of ownership (ed25519 over the canonical
+        // cancel message), on top of the session check below.
+        const bodyKey = bodyCheck.data.sellerPublicKey;
+        const headerKey = req.headers?.['x-seller-public-key'];
+        const sellerPublicKey: string | undefined =
+          bodyKey || (Array.isArray(headerKey) ? headerKey[0] : headerKey) || undefined;
+        const headerSig = req.headers?.['x-signature'] ?? req.headers?.['x-seller-signature'];
+        const signature: string | undefined =
+          req.body?.signature || (Array.isArray(headerSig) ? headerSig[0] : headerSig) || undefined;
+        const requireSignature =
+          options.requireCancelSignature ?? process.env.REQUIRE_CANCEL_SIGNATURE === 'true';
+
+        if (requireSignature && (!sellerPublicKey || !signature)) {
+          return sendFailure(res, 401, 'Cancellation requires seller proof of ownership (signature)', 'UNAUTHORIZED');
+        }
+        if (signature) {
+          if (!sellerPublicKey) {
+            return sendFailure(res, 401, 'Seller public key is required when providing a signature', 'UNAUTHORIZED');
+          }
+          if (originalInvoice.sellerPublicKey !== sellerPublicKey) {
+            return sendFailure(res, 401, 'Signer is not the seller of this invoice', 'UNAUTHORIZED');
+          }
+          const candidateMessages = [
+            canonicalCancelMessage(req.params.id, sellerPublicKey),
+            // Legacy signatures remain valid during the protocol migration.
+            req.params.id,
+            `cancel:${req.params.id}`,
+          ];
+          if (typeof req.body?.message === 'string') candidateMessages.push(req.body.message);
+          if (!verifySellerSignature(sellerPublicKey, signature, candidateMessages)) {
+            return sendFailure(res, 401, 'Invalid signature for cancellation', 'INVALID_SIGNATURE');
+          }
+        }
+
+        // Ownership after the proof checks, as before #328: a bad signature is a
+        // 401, a well-formed request for someone else's invoice is a 403.
+        if (req.actor?.role === 'end_user' && sellerPublicKey && sellerPublicKey !== req.actor.wallet) {
+          return sendForbiddenOwnership(res);
+        }
+        if (sellerPublicKey && sellerPublicKey !== originalInvoice.sellerPublicKey) {
+          return sendFailure(res, 403, 'Unauthorized: only the seller can cancel this invoice', 'FORBIDDEN');
+        }
+        if (!mayAccessSeller(req.actor, 'invoice:cancel', originalInvoice.sellerPublicKey)) {
+          return sendForbiddenOwnership(res);
+        }
+
+        const expectedVersion = req.body?.version ?? (req.headers && req.headers['if-match'] ? Number(req.headers['if-match']) : undefined);
         const invoice = await storage.cancelInvoice(req.params.id, expectedVersion);
 
         // Record audit trail event
@@ -637,6 +695,10 @@ export function createInvoiceHandlers(options: InvoiceHandlerOptions): InvoiceHa
             code: 'CONFLICT',
             correlationId: corrId,
           });
+        }
+
+        if (error instanceof InvalidTransitionError) {
+          return sendInvalidTransition(res, error);
         }
 
         logError('Cancel invoice error:', error);
@@ -967,7 +1029,12 @@ export function createInvoiceHandlers(options: InvoiceHandlerOptions): InvoiceHa
           return sendFailure(res, 400, 'sellerPublicKey must be a valid Stellar public key');
         }
 
-        const stats = await storage.getInvoiceStats(sellerPublicKey as string);
+        // Owner-scoped: revenue figures belong to the seller (restored after #328).
+        if (!mayAccessSeller(req.actor, 'invoice:stats', sellerCheck.data)) {
+          return sendForbiddenOwnership(res);
+        }
+
+        const stats = await storage.getInvoiceStats(sellerCheck.data);
         const duration = performance.now() - start;
 
         metrics.recordOperation({

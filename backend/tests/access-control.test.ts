@@ -27,6 +27,10 @@ import { createAuthRouter } from '../src/routes/auth.routes.ts';
 import { createInvoiceRouter } from '../src/routes/invoice.routes.ts';
 import { createPaymentMonitorRouter } from '../src/routes/payment-monitor.routes.ts';
 import { createNotificationRouter } from '../src/routes/notification.routes.ts';
+import { createQuotaRouter } from '../src/routes/quota.routes.ts';
+import { createAnalyticsRouter } from '../src/routes/analytics.routes.ts';
+import { QuotaManager } from '../src/domain/quota-management.ts';
+import { AnalyticsStore } from '../src/domain/analytics.ts';
 import { NotificationService } from '../src/notifications/notification-service.ts';
 import { InvoiceMemoryService } from '../src/services/invoice-memory.service.ts';
 import { MemoryInvoiceStorage } from '../src/storage/memory-invoice-storage.ts';
@@ -316,6 +320,9 @@ async function startHarness(): Promise<Harness> {
       service: new NotificationService(undefined, undefined, undefined, () => undefined),
     })
   );
+  // Fresh stores so the matrix never touches process-wide quota or analytics state.
+  app.use('/api', createQuotaRouter(new QuotaManager()));
+  app.use('/api', createAnalyticsRouter(new AnalyticsStore()));
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
@@ -427,6 +434,30 @@ describe('access control over HTTP', () => {
       permission: 'monitor:sync',
       expect: { anonymous: 401, owner: 403, stranger: 403, maintainer: 200, service: 200 },
       run: (headers) => call(h, 'POST', '/payment/sync', { headers, body: { limit: 1 } }),
+    },
+    {
+      action: 'inspect quota usage',
+      permission: 'quota:read',
+      expect: { anonymous: 401, owner: 403, stranger: 403, maintainer: 200, service: 200 },
+      run: (headers) => call(h, 'GET', '/quotas', { headers }),
+    },
+    {
+      action: 'reset a quota bucket',
+      permission: 'quota:override',
+      expect: { anonymous: 401, owner: 403, stranger: 403, maintainer: 200, service: 403 },
+      run: (headers) => call(h, 'POST', '/quotas/reset', { headers, body: { actor: 'someone' } }),
+    },
+    {
+      action: 'read the analytics summary',
+      permission: 'analytics:read',
+      expect: { anonymous: 401, owner: 403, stranger: 403, maintainer: 200, service: 200 },
+      run: (headers) => call(h, 'GET', '/analytics/summary', { headers }),
+    },
+    {
+      action: 'clear analytics',
+      permission: 'analytics:clear',
+      expect: { anonymous: 401, owner: 403, stranger: 403, maintainer: 200, service: 403 },
+      run: (headers) => call(h, 'POST', '/analytics/clear', { headers }),
     },
     {
       action: 'change the owner\'s notification preferences',
@@ -580,6 +611,8 @@ describe('access control over HTTP', () => {
         { route: 'POST /invoices/:id/cancel', permission: 'invoice:cancel' },
         { route: 'POST /invoices/:id/verify', permission: 'invoice:verify' },
         { route: 'POST /invoices/:id/simulate-payment', permission: 'invoice:simulate' },
+        { route: 'GET /invoices/:id/email-preview', permission: 'invoice:email' },
+        { route: 'POST /invoices/:id/send-email', permission: 'invoice:email' },
       ]);
     });
 

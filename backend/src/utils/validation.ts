@@ -57,11 +57,30 @@ const externalIdSchema = z
     message: 'externalId must not contain control characters',
   });
 
+/**
+ * Asset code as typed by a seller (issue #8): trimmed and uppercased ("usdc" ->
+ * "USDC"), then checked against the protocol's 1-12 alphanumeric shape.
+ * Verification compares stored code and issuer byte-for-byte. Restored after #328.
+ */
+export const assetCodeSchema = z
+  .string()
+  .transform((code) => code.trim().toUpperCase())
+  .pipe(z.string().regex(/^[A-Z0-9]{1,12}$/, 'Asset code must be 1-12 letters or digits'));
+
+/**
+ * Issuer of a credit asset (issue #8): a well-formed Ed25519 strkey including
+ * its checksum. Case is not normalized; a lowercase key is rejected, not fixed.
+ */
+export const assetIssuerSchema = stellarPublicKeySchema.refine(
+  (key) => StellarSdk.StrKey.isValidEd25519PublicKey(key),
+  'Invalid Stellar issuer key (checksum failed)',
+);
+
 export const createInvoiceSchema = z
   .object({
     amount: z.number().positive().max(DEFAULT_POLICY.invoice.maxAmount),
-    assetCode: z.string().default('XLM').optional(),
-    assetIssuer: stellarPublicKeySchema.optional(),
+    assetCode: assetCodeSchema.default('XLM').optional(),
+    assetIssuer: assetIssuerSchema.optional(),
     description: plainText(500, true).optional(),
     customerName: plainText(255).optional(),
     customerEmail: z.string().email().optional(),
