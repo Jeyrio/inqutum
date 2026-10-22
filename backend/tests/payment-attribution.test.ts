@@ -18,6 +18,9 @@ import {
   PaymentClaimIndex,
 } from '../src/domain/payment-attribution';
 import { SettlementTimeUnavailableError } from '../src/domain/invoice-settlement';
+// Static, like the imports above: a dynamic import of an already-loaded module
+// can yield a second class instance under Node 20, breaking instanceof.
+import { InvoiceService } from '../src/services/invoice.service';
 import { MemoryStorage } from '../src/storage/memory-storage';
 import { InvoiceMemoryService } from '../src/services/invoice-memory.service';
 import { createInvoiceSchema } from '../src/utils/validation';
@@ -200,8 +203,6 @@ describe('Postgres payment_tx_hash uniqueness (schema + error mapping)', () => {
   });
 
   it('a unique violation on the hash index surfaces as PaymentClaimError', async () => {
-    const { InvoiceService } = await import('../src/services/invoice.service.ts');
-    const { PaymentClaimError } = await import('../src/domain/payment-attribution.ts');
     const hash = 'ab'.repeat(32);
     const db = {
       async query(text: string) {
@@ -225,8 +226,6 @@ describe('Postgres payment_tx_hash uniqueness (schema + error mapping)', () => {
   });
 
   it('other unique violations are not mistaken for a hash conflict', async () => {
-    const { InvoiceService } = await import('../src/services/invoice.service.ts');
-    const { PaymentClaimError } = await import('../src/domain/payment-attribution.ts');
     const db = {
       async query() {
         const error: any = new Error('duplicate key');
