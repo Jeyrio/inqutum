@@ -6,6 +6,14 @@ export async function resolve(specifier, context, nextResolve) {
     };
   }
 
+  // Toasts are UI side effects; the repo root installs no frontend packages.
+  if (specifier === 'sonner') {
+    return {
+      shortCircuit: true,
+      url: 'data:text/javascript,const noop = () => {}; export const toast = Object.assign(noop, { success: noop, error: noop, loading: noop, dismiss: noop });',
+    };
+  }
+
   if (specifier === './quittance-proof' || specifier === './quittance-proof.js') {
     return nextResolve(new URL('../frontend/lib/quittance-proof.ts', import.meta.url).href, context);
   }

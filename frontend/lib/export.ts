@@ -16,13 +16,42 @@ import {
 } from './mailto-delivery.js';
 
 import {
+  buildQuittanceProof,
+  createQuittanceProofPdf,
+  isQuittanceProof,
+  renderQuittanceProofHtml,
+  type QuittanceProof,
+  type QuittanceProofResult,
+  QUITTANCE_PROOF_VERSION,
+} from './quittance-proof.ts';
+
+import {
   PRINT_DOCUMENT_CSP,
   buildMailtoUrl,
   csvCell,
   escapeHtml,
 } from './safe-content.js';
 
-export { assertPaymentProofAvailable, canExportPaymentProof };
+// Re-exported so callers (and tests/export.test.mjs) have one entry point for
+// proof and mail delivery. Restored from 26edbb8; #328 dropped them.
+export {
+  assertPaymentProofAvailable,
+  canExportPaymentProof,
+  buildInvoiceMailto,
+  buildProofMailto,
+  canSendInvoiceEmail,
+  canSendProofEmail,
+  getInvoiceMailtoRecipient,
+  getProofMailtoRecipient,
+  openInvoiceMailto,
+  openProofMailto,
+  buildQuittanceProof,
+  createQuittanceProofPdf,
+  isQuittanceProof,
+  renderQuittanceProofHtml,
+  QUITTANCE_PROOF_VERSION,
+};
+export type { QuittanceProof, QuittanceProofResult };
 export { escapeHtml };
 
 export interface Invoice {
@@ -187,7 +216,12 @@ export function latePaymentWarning(
  * Generates standalone printable HTML for an invoice PDF.
  * Hardens boundary contracts for date tolerance, character escaping, and proof checks (issue #148).
  */
-export function generateInvoicePDF(invoice: Invoice): string {
+export function generateInvoicePDF(invoiceOrProof: Invoice | QuittanceProof): string {
+  // A canonical proof has its own renderer; only raw invoices use the template below.
+  if (isQuittanceProof(invoiceOrProof)) {
+    return renderQuittanceProofHtml(invoiceOrProof);
+  }
+  const invoice = invoiceOrProof as Invoice;
   if (!invoice || typeof invoice !== 'object') {
     throw new Error('Invoice object is required to generate PDF');
   }
@@ -492,7 +526,12 @@ export function generateInvoicePDF(invoice: Invoice): string {
 </html>`;
 }
 
-export function openInvoicePDF(invoice: Invoice) {
+/** Print-ready HTML for a canonical quittance proof. */
+export function generateQuittanceProofPDF(proof: QuittanceProof): string {
+  return renderQuittanceProofHtml(proof);
+}
+
+export function openInvoicePDF(invoice: Invoice | QuittanceProof) {
   
   const triggerElement = document.activeElement as HTMLElement | null;
 
