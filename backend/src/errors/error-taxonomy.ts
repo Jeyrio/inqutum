@@ -266,6 +266,14 @@ export const DOMAIN_ERROR_TAXONOMY: Record<string, DomainErrorDefinition> = {
     userSafeMessage: 'Invoice was modified by another session. Please refresh and try again.',
     recoveryAction: 'Refresh the invoice to get the latest version, then retry the operation.',
   },
+  SERVICE_UNAVAILABLE: {
+    code: 'SERVICE_UNAVAILABLE',
+    category: 'NETWORK',
+    httpStatus: 503,
+    retryable: true,
+    userSafeMessage: 'The service is temporarily unavailable.',
+    recoveryAction: 'Please retry shortly.',
+  },
   INTERNAL_ERROR: {
     code: 'INTERNAL_ERROR',
     category: 'INTERNAL',
@@ -412,5 +420,30 @@ export function buildUserSafeErrorResponse(
     ...(correlationId ? { correlationId } : {}),
     ...(error?.details ? { details: sanitizeObject(error.details) } : {}),
     timestamp: new Date().toISOString(),
+  };
+}
+
+/** HTTP status for a code; unknown codes are internal errors (500). */
+export function getErrorStatusCode(code: string): number {
+  return DOMAIN_ERROR_TAXONOMY[code]?.httpStatus ?? 500;
+}
+
+/** Whether retrying the same request may succeed. Unknown codes are not. */
+export function isRecoverableError(code: string): boolean {
+  return DOMAIN_ERROR_TAXONOMY[code]?.retryable ?? false;
+}
+
+/** A code and message as the flat shape callers log and return. */
+export function categorizeError(
+  code: string,
+  message: string
+): { code: string; message: string; category: ErrorCategory; statusCode: number; recoverable: boolean } {
+  const definition = DOMAIN_ERROR_TAXONOMY[code];
+  return {
+    code,
+    message,
+    category: definition?.category ?? 'INTERNAL',
+    statusCode: getErrorStatusCode(code),
+    recoverable: isRecoverableError(code),
   };
 }

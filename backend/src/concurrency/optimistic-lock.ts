@@ -53,3 +53,40 @@ export function checkVersion(expected: number | undefined, actual: number): void
     throw new ConflictError(actual, expected);
   }
 }
+
+/** Persistence the generic lock helper needs: read the version, and compare-and-set it. */
+export interface OptimisticLockStore {
+  readVersion(id: string): Promise<number | undefined>;
+  /** Sets `next` only if the stored version is still `expected`; returns whether it did. */
+  writeVersion(id: string, expected: number, next: number): Promise<boolean>;
+}
+
+export type OptimisticLockResult =
+  | { ok: true; code: 'LOCK_ACQUIRED'; nextVersion: number }
+  | { ok: false; code: 'STALE_VERSION'; currentVersion?: number; recoverable: false }
+  | { ok: false; code: 'LOCK_STORE_UNAVAILABLE'; recoverable: true };
+
+/**
+ * Compare-and-set a record's version: succeeds only when the caller's observed
+ * version is still current. A store failure is reported as recoverable, never
+ * as a conflict, so callers can tell "retry later" from "re-read first".
+ */
+export async function acquireOptimisticLock(
+  store: OptimisticLockStore,
+  record: { id: string; version: number },
+  expectedVersion: number
+): Promise<OptimisticLockResult> {
+  try {
+    const current = await store.readVersion(record.id);
+    if (current !== expectedVersion) {
+      return { ok: false, code: 'STALE_VERSION', currentVersion: current, recoverable: false };
+    }
+    const nextVersion = expectedVersion + 1;
+    if (!(await store.writeVersion(record.id, expectedVersion, nextVersion))) {
+      return { ok: false, code: 'STALE_VERSION', recoverable: false };
+    }
+    return { ok: true, code: 'LOCK_ACQUIRED', nextVersion };
+  } catch {
+    return { ok: false, code: 'LOCK_STORE_UNAVAILABLE', recoverable: true };
+  }
+}

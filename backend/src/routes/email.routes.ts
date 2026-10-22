@@ -7,11 +7,22 @@ import {
   isValidRecipient,
   type EmailStatus,
 } from '../notifications/email-delivery';
+import { authenticate, mayAccessSeller, requirePermission } from '../middleware/access-control';
+import type { InvoiceStorage } from '../storage/invoice-storage';
+import { EmailQueueService, emailQueueService } from '../services/email-queue.service';
 
 export interface EmailRouterOptions {
   service?: EmailDeliveryService;
   /** When true, POST /email/webhook accepts unsigned provider callbacks. */
   allowUnsignedWebhooks?: boolean;
+  /**
+   * Invoice store. When given, the per-invoice routes are mounted:
+   * POST /invoices/:id/send-proof and GET /invoices/:id/deliveries
+   * (restored after #328 replaced this router).
+   */
+  storage?: InvoiceStorage;
+  /** Queue for per-invoice emails. Defaults to the process-wide queue. */
+  queueService?: EmailQueueService;
 }
 
 const sendEmailSchema = z.object({
@@ -195,7 +206,78 @@ export function createEmailRouter(options: EmailRouterOptions = {}): Router {
     return sendSuccess(res, 200, { delivery: record }, { correlationId: req.correlationId });
   });
 
+  if (options.storage) {
+    mountInvoiceEmailRoutes(router, options.storage, options.queueService ?? emailQueueService);
+  }
+
   return router;
+}
+
+function mountInvoiceEmailRoutes(router: Router, storage: InvoiceStorage, queue: EmailQueueService): void {
+  // Queue a payment-proof email for a paid invoice. 202: delivery is async.
+  router.post(
+    '/invoices/:id/send-proof',
+    authenticate(),
+    requirePermission('invoice:email'),
+    async (req: Request, res: Response) => {
+      try {
+        const invoice = await storage.getInvoiceById(req.params.id);
+        if (!invoice) return sendFailure(res, 404, 'Invoice not found', 'INVOICE_NOT_FOUND');
+        if (invoice.status !== 'PAID') {
+          return sendFailure(res, 400, 'Payment proof is only available for paid invoices', 'INVOICE_NOT_PAID');
+        }
+
+        const { recipientEmail, subject, text, html } = req.body ?? {};
+        const targetEmail = recipientEmail || invoice.payerEmail || invoice.customerEmail || invoice.sellerEmail;
+        if (!targetEmail) return sendFailure(res, 400, 'Recipient email is required', 'MISSING_RECIPIENT_EMAIL');
+
+        const result = await queue.enqueue({
+          invoiceId: invoice.id,
+          recipientEmail: targetEmail,
+          senderWallet: invoice.sellerPublicKey,
+          emailType: 'PAYMENT_PROOF',
+          subject: subject || `Payment Receipt: ${invoice.memo}`,
+          payload: {
+            text:
+              text ||
+              `Your payment for invoice ${invoice.memo} (${invoice.amount} ${invoice.assetCode}) was confirmed on Stellar. Tx: ${invoice.paymentTxHash}`,
+            html,
+            invoice,
+          },
+        } as any);
+
+        if (!result.success) {
+          if (result.code === 'EMAIL_RATE_LIMIT_EXCEEDED' || result.code === 'QUOTA_EXCEEDED') {
+            res.set('Retry-After', String(result.retryAfterSeconds || 3600));
+            return sendFailure(res, 429, result.error || 'Too many emails', result.code);
+          }
+          return sendFailure(res, 400, result.error || 'Failed to queue proof email', result.code);
+        }
+        return sendSuccess(res, 202, result.delivery, { message: 'Payment proof email queued for delivery' });
+      } catch (error: any) {
+        return sendFailure(res, 500, error.message || 'Failed to send payment proof email');
+      }
+    }
+  );
+
+  // Delivery status for the invoice's owner (or an operator).
+  router.get(
+    '/invoices/:id/deliveries',
+    authenticate(),
+    requirePermission('invoice:deliveries'),
+    async (req: Request, res: Response) => {
+      try {
+        const invoice = await storage.getInvoiceById(req.params.id);
+        if (!invoice) return sendFailure(res, 404, 'Invoice not found', 'INVOICE_NOT_FOUND');
+        if (!mayAccessSeller(req.actor, 'invoice:deliveries', invoice.sellerPublicKey)) {
+          return sendFailure(res, 403, 'You can only view deliveries for your own invoices', 'FORBIDDEN');
+        }
+        return sendSuccess(res, 200, await queue.getInvoiceDeliveries(invoice.id));
+      } catch (error: any) {
+        return sendFailure(res, 500, error.message || 'Failed to get email deliveries');
+      }
+    }
+  );
 }
 
 export default createEmailRouter;

@@ -37,6 +37,13 @@ const USDC_ISSUER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 
 import { InvoiceService } from '../src/services/invoice.service';
 
+// Request and queue logging is noise here and, at volume, makes the node:test
+// runner's IPC stream fail ("Unable to deserialize cloned data"), as in
+// access-control.test.ts.
+for (const method of ['log', 'warn', 'error', 'info'] as const) {
+  console[method] = () => undefined;
+}
+
 interface PersistenceModeConfig {
   name: string;
   setup: () => {

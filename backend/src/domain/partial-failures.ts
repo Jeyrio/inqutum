@@ -213,3 +213,49 @@ export function jobsToOperations(jobs: Job[]): PartialOperation[] {
       resolvedAt: j.status === 'succeeded' ? j.completedAt ?? j.updatedAt : null,
     }));
 }
+
+export interface BatchOperation {
+  id: string;
+  operation: string;
+}
+
+export interface BatchItemResult {
+  id: string;
+  ok: boolean;
+  code: string;
+}
+
+export interface BatchResult {
+  code: 'ALL_SUCCESS' | 'PARTIAL_FAILURE' | 'TOTAL_FAILURE';
+  successful: number;
+  failed: number;
+  /** Retrying the failed items can help only if some items already succeeded. */
+  recoverable: boolean;
+  results: BatchItemResult[];
+}
+
+/**
+ * Runs each operation independently; a thrown handler counts as that item's
+ * failure, never the whole batch's. The outcome tells all, some or none apart.
+ */
+export async function processBatch(
+  operations: BatchOperation[],
+  handler: (operation: BatchOperation) => Promise<BatchItemResult>
+): Promise<BatchResult> {
+  const results: BatchItemResult[] = [];
+  for (const operation of operations) {
+    try {
+      results.push(await handler(operation));
+    } catch {
+      results.push({ id: operation.id, ok: false, code: 'HANDLER_ERROR' });
+    }
+  }
+  const successful = results.filter((result) => result.ok).length;
+  const failed = results.length - successful;
+  const code = failed === 0 ? 'ALL_SUCCESS' : successful === 0 ? 'TOTAL_FAILURE' : 'PARTIAL_FAILURE';
+  return { code, successful, failed, recoverable: code === 'PARTIAL_FAILURE', results };
+}
+
+export function summarizePartialFailures(result: BatchResult): string {
+  return `${result.successful} succeeded, ${result.failed} failed (${result.code})`;
+}

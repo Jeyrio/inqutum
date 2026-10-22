@@ -70,3 +70,27 @@ export class SandboxHorizon {
     return verifyHorizonPayment({ txHash: hashCheck.value, expected, network, ...details });
   }
 }
+
+export type AdapterType = 'http' | 'horizon' | 'email';
+const SUPPORTED_ADAPTERS: readonly AdapterType[] = ['http', 'horizon', 'email'];
+
+export interface AdapterConfig {
+  type: string;
+  options?: Record<string, unknown>;
+}
+
+export type AdapterResult =
+  | { ok: true; code: 'ADAPTER_SUCCESS'; adapter: { type: AdapterType; options: Record<string, unknown> } }
+  | { ok: false; code: 'ADAPTER_INVALID_CONFIG' | 'ADAPTER_NOT_SUPPORTED'; recoverable: false };
+
+/** Validates an adapter config against the supported adapter types. */
+export async function createAdapter(config: AdapterConfig): Promise<AdapterResult> {
+  if (!config || typeof config.type !== 'string' || !config.type.trim()) {
+    return { ok: false, code: 'ADAPTER_INVALID_CONFIG', recoverable: false };
+  }
+  const type = config.type.trim() as AdapterType;
+  if (!SUPPORTED_ADAPTERS.includes(type)) {
+    return { ok: false, code: 'ADAPTER_NOT_SUPPORTED', recoverable: false };
+  }
+  return { ok: true, code: 'ADAPTER_SUCCESS', adapter: { type, options: { ...(config.options ?? {}) } } };
+}

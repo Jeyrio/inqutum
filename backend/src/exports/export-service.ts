@@ -285,3 +285,40 @@ export class ExportService {
     return [header, ...rows].join('\r\n') + '\r\n';
   }
 }
+
+/** Source of rows for the generic export helper. */
+export interface ExportRepository<T extends Record<string, unknown>> {
+  load(request: { actorId: string; resource: string }): Promise<T[]>;
+}
+
+export type GenericExportResult =
+  | { ok: true; code: 'EXPORT_READY'; format: ExportFormat; body: string; count: number }
+  | { ok: false; code: 'EXPORT_INVALID_REQUEST'; recoverable: false }
+  | { ok: false; code: 'EXPORT_RETRYABLE_DEPENDENCY'; recoverable: true };
+
+/**
+ * Exports any row set as JSON or CSV. CSV columns are the sorted union of row
+ * keys, so the output is deterministic whatever the key order of the rows.
+ */
+export async function buildExport<T extends Record<string, unknown>>(
+  repository: ExportRepository<T>,
+  request: { actorId: string; resource: string; format: ExportFormat }
+): Promise<GenericExportResult> {
+  if (!request.actorId?.trim() || !request.resource?.trim() || !['json', 'csv'].includes(request.format)) {
+    return { ok: false, code: 'EXPORT_INVALID_REQUEST', recoverable: false };
+  }
+  let rows: T[];
+  try {
+    rows = await repository.load({ actorId: request.actorId, resource: request.resource });
+  } catch {
+    return { ok: false, code: 'EXPORT_RETRYABLE_DEPENDENCY', recoverable: true };
+  }
+  if (request.format === 'json') {
+    return { ok: true, code: 'EXPORT_READY', format: 'json', body: JSON.stringify(rows), count: rows.length };
+  }
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))].sort();
+  const cell = (value: unknown) =>
+    csvCell(value === null || value === undefined ? null : typeof value === 'number' ? value : String(value));
+  const lines = [columns.join(','), ...rows.map((row) => columns.map((column) => cell(row[column])).join(','))];
+  return { ok: true, code: 'EXPORT_READY', format: 'csv', body: lines.join('\n'), count: rows.length };
+}

@@ -227,3 +227,45 @@ export class PermissionAwareSearchIndex {
 }
 
 export const defaultSearchIndex = new PermissionAwareSearchIndex();
+
+/** Minimal persistence for the generic indexing helpers. */
+export interface SearchIndexEntry {
+  id: string;
+  content: string;
+  timestamp: Date;
+}
+
+export interface SearchIndexStore {
+  indexEntry(entry: SearchIndexEntry): Promise<boolean>;
+  search(query: string): Promise<SearchIndexEntry[]>;
+}
+
+export type SearchIndexResult =
+  | { ok: true; code: 'INDEX_SUCCESS' }
+  | { ok: false; code: 'INDEX_INVALID_INPUT'; recoverable: false }
+  | { ok: false; code: 'INDEX_REJECTED'; recoverable: false }
+  | { ok: false; code: 'INDEX_STORE_UNAVAILABLE'; recoverable: true };
+
+/** Validates and indexes one entry; a store failure is recoverable. */
+export async function indexSearchEntry(store: SearchIndexStore, entry: SearchIndexEntry): Promise<SearchIndexResult> {
+  if (!entry?.id?.trim() || typeof entry.content !== 'string' || !(entry.timestamp instanceof Date) || Number.isNaN(entry.timestamp.getTime())) {
+    return { ok: false, code: 'INDEX_INVALID_INPUT', recoverable: false };
+  }
+  try {
+    return (await store.indexEntry(entry))
+      ? { ok: true, code: 'INDEX_SUCCESS' }
+      : { ok: false, code: 'INDEX_REJECTED', recoverable: false };
+  } catch {
+    return { ok: false, code: 'INDEX_STORE_UNAVAILABLE', recoverable: true };
+  }
+}
+
+/** Searches; an empty query or a store failure yields no results. */
+export async function searchIndexEntries(store: SearchIndexStore, query: string): Promise<SearchIndexEntry[]> {
+  if (!query?.trim()) return [];
+  try {
+    return await store.search(query.trim());
+  } catch {
+    return [];
+  }
+}
