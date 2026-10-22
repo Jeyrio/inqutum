@@ -75,6 +75,15 @@ export const INVOICE_TRANSITIONS: readonly InvoiceTransition[] = [
 export type InvoiceLifecycleErrorCode = 'INVALID_TRANSITION';
 
 /** Raised when a caller asks for a move the lifecycle does not allow. */
+/**
+ * The explanation the API gave for these refusals before the lifecycle table
+ * existed. Kept as a second sentence so existing clients matching it still work.
+ */
+const TRANSITION_REFUSAL_DETAIL: Readonly<Record<string, string>> = {
+  PAID: ' The invoice was not found, expired, or already processed.',
+  CANCELLED: ' The invoice was not found or already processed.',
+};
+
 export class InvalidTransitionError extends Error {
   readonly code: InvoiceLifecycleErrorCode = 'INVALID_TRANSITION';
   readonly from: string;
@@ -84,7 +93,7 @@ export class InvalidTransitionError extends Error {
   // Plain fields rather than constructor parameter properties: the frontend
   // loads this file through Node's type stripping, which only erases types.
   constructor(from: string, to: string, event?: InvoiceEvent) {
-    super(`Invalid invoice transition: ${from} -> ${to}`);
+    super(`Invalid invoice transition: ${from} -> ${to}.${TRANSITION_REFUSAL_DETAIL[to] ?? ''}`);
     this.name = 'InvalidTransitionError';
     this.from = from;
     this.to = to;

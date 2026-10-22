@@ -17,6 +17,7 @@
  * recovery states would be a product decision beyond "formal tests".
  */
 import assert from 'node:assert/strict';
+import { SettlementTimeUnavailableError } from '../src/domain/invoice-settlement';
 import { describe, it, beforeEach } from 'node:test';
 import { MemoryStorage } from '../src/storage/memory-storage.ts';
 import { InvoiceMemoryService } from '../src/services/invoice-memory.service.ts';
@@ -58,10 +59,25 @@ describe('Invoice lifecycle: terminal and recovery transitions (Issue #242)', ()
       await assert.rejects(() => service.markAsPaid(invoice.id, 'tx-2', PAYER), /not found, expired, or already processed/);
     });
 
-    it('rejects settling an already-cancelled invoice', async () => {
+    // A cancelled invoice is not terminal for payment: funds that reach the
+    // seller after a cancel are recorded late (docs/LATE_PAYMENT_POLICY.md).
+    // Without the ledger close time the store cannot classify the payment, so
+    // it refuses; with it, the invoice settles PAID / AFTER_CANCEL.
+    it('refuses a late settlement of a cancelled invoice without a ledger time', async () => {
       const invoice = await createPending();
       await service.cancelInvoice(invoice.id);
-      await assert.rejects(() => service.markAsPaid(invoice.id, 'tx-1', PAYER), /not found, expired, or already processed/);
+      await assert.rejects(() => service.markAsPaid(invoice.id, 'tx-1', PAYER), SettlementTimeUnavailableError);
+    });
+
+    it('settles a cancelled invoice late when the ledger time is after the cancel', async () => {
+      const invoice = await createPending();
+      await service.cancelInvoice(invoice.id);
+      const settled = await service.markAsPaid(invoice.id, 'tx-1', PAYER, undefined, {
+        settledAt: new Date(Date.now() + 1000),
+      });
+      assert.equal(settled.status, 'PAID');
+      assert.equal(settled.settlementContext, 'AFTER_CANCEL');
+      assert.equal(settled.latePaymentWarningCode, 'PAYMENT_RECEIVED_AFTER_CANCEL');
     });
 
     it('rejects settling an already-expired invoice', async () => {

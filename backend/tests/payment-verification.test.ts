@@ -230,7 +230,7 @@ describe('verifyHorizonPayment — happy path', () => {
   it('does not throw when a fee-bump envelope has no inner transaction', () => {
     const result = verifyHorizonPayment(
       input({
-        transaction: { envelope_type: 'fee_bump', memo: 'INV-2K4H9' },
+        transaction: { envelope_type: 'fee_bump', memo: 'INV-2K4H9', memo_type: 'text' },
         operations: [paymentOp()],
       })
     );

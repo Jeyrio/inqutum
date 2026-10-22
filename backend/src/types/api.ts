@@ -146,7 +146,14 @@ export function sendSuccess<T>(
   res: Response,
   status: number,
   data: T,
-  extra?: { message?: string; pagination?: ApiPagination; correlationId?: string; apiVersion?: string }
+  extra?: {
+    message?: string;
+    code?: string;
+    warning?: string;
+    pagination?: ApiPagination;
+    correlationId?: string;
+    apiVersion?: string;
+  }
 ): void {
   const corrId = extra?.correlationId || (res.req as any)?.correlationId;
   res.status(status).json(apiSuccess(data, { ...extra, correlationId: corrId }));

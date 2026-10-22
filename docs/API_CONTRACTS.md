@@ -88,10 +88,11 @@ which is also logged — quote it in a bug report.
 
 | Mode | Requirement |
 | --- | --- |
-| `none` | No credential. The invoice API is scoped by wallet key, not by login. |
+| `none` | No credential. Used by the payer-facing reads, verify, health and sign-in. |
 | `public` | Any authenticated caller: a wallet session (`end_user`) or a `MAINTAINER_API_TOKENS` bearer. Anonymous → 401. Used by disputes and safe risk summaries. |
 | `admin` | `Authorization: Bearer <JOBS_ADMIN_TOKEN>`. Compared with `timingSafeEqual`. Absent token → 401, disabled route → 403. |
 | `maintainer` | `Authorization: Bearer <token>` from `MAINTAINER_API_TOKENS` or `SERVICE_API_TOKENS`, with the route's permission (for example `monitor:sync`). Absent or wallet-session token → 401; a role without the permission → 403. |
+| `token` | A route-specific shared secret header, not the admin bearer. `GET /api/admin/cutover-export` reads `X-Cutover-Token` against `CUTOVER_EXPORT_TOKEN`: unset → 503, wrong → 401. |
 | `hmac` | Signed request body plus a timestamp header, verified against `WEBHOOK_SIGNING_SECRET` with a 5-minute tolerance and a replay window. Missing headers → 400 `MALFORMED_WEBHOOK`; stale timestamp → 408 `STALE_TIMESTAMP`; bad signature → 401 `INVALID_SIGNATURE`; replayed event id → 409 `DUPLICATE_EVENT`. |
 
 Sensitive admin actions (`PUT /api/ops/config/feature-flags/:flag`) need the
@@ -189,6 +190,7 @@ cursor. These semantics are pinned by
 
 | Method | Path | Auth | Statuses | Purpose |
 | --- | --- | --- | --- | --- |
+| `GET` | `/api/admin/cutover-export` | `token` | 200, 401, 503 | MVP only: in-memory snapshot download for the Postgres cutover. |
 | `GET` | `/api/reconciliation` | `maintainer` | 200, 400, 401, 403, 500 | Read-only reconciliation dry run (operators and services). |
 | `GET` | `/api/quotas` | `maintainer` | 200, 401, 403 | Inspect quota usage by actor or resource. |
 | `POST` | `/api/quotas/overrides` | `maintainer` | 200, 400, 401, 403 | Set or remove a quota override. |

@@ -233,7 +233,7 @@ describe('End-to-End High-Risk User Journey: Invoicing & Horizon Settlement (Iss
 
       // First attempt: Transaction with wrong memo
       mockHorizonTx = {
-        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: 'WRONG-MEMO-9999' },
+        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: 'WRONG-MEMO-9999', memo_type: 'text' },
         operations: [
           {
             type: 'payment',
@@ -284,7 +284,7 @@ describe('End-to-End High-Risk User Journey: Invoicing & Horizon Settlement (Iss
 
       // Attacker issues credit token with code XLM
       mockHorizonTx = {
-        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo },
+        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo, memo_type: 'text' },
         operations: [
           {
             type: 'payment',
@@ -322,7 +322,7 @@ describe('End-to-End High-Risk User Journey: Invoicing & Horizon Settlement (Iss
 
       // 99.9999999 XLM (1 stroop under)
       mockHorizonTx = {
-        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo },
+        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo, memo_type: 'text' },
         operations: [
           {
             type: 'payment',
@@ -358,7 +358,7 @@ describe('End-to-End High-Risk User Journey: Invoicing & Horizon Settlement (Iss
       const invoice = createRes.body.data.invoice;
 
       mockHorizonTx = {
-        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo },
+        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo, memo_type: 'text' },
         operations: [
           {
             type: 'payment',
@@ -400,7 +400,7 @@ describe('End-to-End High-Risk User Journey: Invoicing & Horizon Settlement (Iss
       }
 
       mockHorizonTx = {
-        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo },
+        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo, memo_type: 'text' },
         operations: [
           {
             type: 'payment',
@@ -436,7 +436,7 @@ describe('End-to-End High-Risk User Journey: Invoicing & Horizon Settlement (Iss
       const invoice = createRes.body.data.invoice;
 
       mockHorizonTx = {
-        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo },
+        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo, memo_type: 'text' },
         operations: [
           {
             type: 'payment',
@@ -481,7 +481,7 @@ describe('End-to-End High-Risk User Journey: Invoicing & Horizon Settlement (Iss
       const invoice = createRes.body.data.invoice;
 
       mockHorizonTx = {
-        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo },
+        transaction: { id: VALID_TX_HASH, hash: VALID_TX_HASH, memo: invoice.memo, memo_type: 'text' },
         operations: [
           {
             type: 'payment',

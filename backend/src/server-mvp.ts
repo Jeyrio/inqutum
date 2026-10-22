@@ -30,6 +30,13 @@ import { authenticate, requirePermission } from './middleware/access-control';
 import { createDisputeRouter } from './routes/dispute.routes';
 import { createRiskRouter } from './routes/risk.routes';
 import { createFeeRouter } from './routes/fee.routes';
+import { createAuthRouter } from './routes/auth.routes';
+import { createReconciliationRouter } from './routes/reconciliation.routes';
+import { createEmailRouter } from './routes/email.routes';
+import { createQuotaRouter } from './routes/quota.routes';
+import { createAnalyticsRouter } from './routes/analytics.routes';
+import { createImportRouter } from './routes/import.routes';
+import { createCutoverExportRouter } from './routes/cutover.routes';
 
 import { validateEnvironment } from './config/env-validator';
 import { VERIFICATION_CONTRACT_VERSION } from './services/payment-verification';
@@ -90,7 +97,18 @@ app.get('/api/health', healthHandler(memoryInvoiceStorage.mode));
 app.get('/api/ready', readinessHandler(memoryInvoiceStorage.mode));
 
 // Invoice, Audit & Observability routes
+// Restored after #328 dropped them from the MVP server. Wallet sign-in in
+// particular: without /auth/session no wallet session could be issued here,
+// and invoice creation needs one.
+app.use('/api', createAuthRouter());
+app.use('/api', createReconciliationRouter({ storage: memoryInvoiceStorage }));
 app.use('/api', createInvoiceRouter({ storage: memoryInvoiceStorage }));
+app.use('/api', createEmailRouter());
+app.use('/api', createQuotaRouter());
+app.use('/api', createAnalyticsRouter());
+app.use('/api', createImportRouter({ storage: memoryInvoiceStorage }));
+app.use('/api', createPaymentMonitorRouter(paymentMonitorService));
+app.use('/api', createCutoverExportRouter());
 app.use('/api', createAuditRouter({ storage: memoryInvoiceStorage }));
 app.use('/api', createObservabilityRouter({ storage: memoryInvoiceStorage }));
 app.use('/api', createNotificationRouter());

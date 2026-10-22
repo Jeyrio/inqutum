@@ -88,7 +88,7 @@ export const VERIFICATION_MESSAGES: Record<VerificationCode, string> = {
   AMOUNT_MISMATCH: 'Amount mismatch',
   ASSET_MISMATCH: 'Asset mismatch',
   NETWORK_MISMATCH: 'Transaction is on a different Stellar network',
-  TX_HASH_ALREADY_USED: 'Transaction already settled another invoice',
+  TX_HASH_ALREADY_USED: 'Duplicate transaction: it already settled another invoice',
 };
 
 /** The stable set of rejection codes, in declaration order. */

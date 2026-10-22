@@ -235,6 +235,7 @@ describe('API contract — response envelopes', () => {
       API_CONTRACT.filter((e) => e.responseKind === 'raw').map((e) => e.path).sort(),
       [
         '/',
+        '/api/admin/cutover-export',
         '/api/audit/export',
         '/api/exports/:id',
         '/api/health',
@@ -428,7 +429,7 @@ describe('API contract — admin auth', () => {
   it('documents auth for every endpoint', () => {
     for (const endpoint of API_CONTRACT) {
       assert.ok(
-        ['none', 'admin', 'hmac', 'public', 'maintainer'].includes(endpoint.auth),
+        ['none', 'admin', 'hmac', 'public', 'maintainer', 'token'].includes(endpoint.auth),
         `${endpoint.method} ${endpoint.path} has an unknown auth mode "${endpoint.auth}"`
       );
     }

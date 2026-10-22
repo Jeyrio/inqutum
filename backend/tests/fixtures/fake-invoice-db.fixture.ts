@@ -53,6 +53,8 @@ export class FakeInvoiceDb implements Queryable {
         settlement_context: null,
         prior_status: null,
         late_payment_warning_code: null,
+        // The real INSERT sets version to the literal 1.
+        version: 1,
       };
       INSERT_COLUMNS.forEach((column, index) => {
         row[column] = params[index] ?? null;
@@ -76,11 +78,13 @@ export class FakeInvoiceDb implements Queryable {
 
     if (sql.startsWith('WITH settled AS')) {
       const settledAt = params[5] ? new Date(params[5]) : new Date();
+      const expectedVersion = params[6] ?? null;
       const row = this.rows.find(
         (candidate) =>
           candidate.id === params[0] &&
+          (expectedVersion === null || candidate.version === expectedVersion) &&
           ((candidate.status === 'PENDING' && new Date(candidate.expires_at).getTime() > Date.now()) ||
-            (candidate.status === 'CANCELLED' && candidate.cancelled_at && Number.isFinite(settledAt.getTime())))
+            (candidate.status === 'CANCELLED' && candidate.cancelled_at && params[5]))
       );
       if (!row) return { rows: [], rowCount: 0 };
       const afterCancel =
@@ -96,6 +100,7 @@ export class FakeInvoiceDb implements Queryable {
         settled_at: settledAt,
         settlement_context: afterCancel ? 'AFTER_CANCEL' : 'ON_TIME',
         late_payment_warning_code: afterCancel ? 'PAYMENT_RECEIVED_AFTER_CANCEL' : null,
+        version: row.version + 1,
       });
       // The real statement writes the PAYMENT_CONFIRMED event in the same CTE.
       this.pushEvent(row.id, 'PAYMENT_CONFIRMED', { txHash: params[1], payerPublicKey: params[2] });
@@ -103,16 +108,20 @@ export class FakeInvoiceDb implements Queryable {
     }
 
     if (sql.startsWith("UPDATE invoices SET status = 'CANCELLED'")) {
+      // Mirrors InvoiceService.cancelInvoice: [id, sellerPublicKey?, version?].
       const sellerPublicKey = params[1] ?? null;
+      const expectedVersion = params[2] ?? null;
       const row = this.rows.find(
         (candidate) =>
           candidate.id === params[0] &&
           candidate.status === 'PENDING' &&
-          (!sellerPublicKey || candidate.seller_public_key === sellerPublicKey)
+          (!sellerPublicKey || candidate.seller_public_key === sellerPublicKey) &&
+          (expectedVersion === null || candidate.version === expectedVersion)
       );
       if (!row) return { rows: [], rowCount: 0 };
       row.status = 'CANCELLED';
       row.cancelled_at = new Date();
+      row.version += 1;
       return { rows: [{ ...row }], rowCount: 1 };
     }
 

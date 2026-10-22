@@ -99,9 +99,16 @@ function paymentOn(overrides: {
   assetCode?: string;
   txHash?: string;
 }) {
-  const hash = overrides.txHash ?? TX_HASH;
+  // Pinned to one hash when the test cares which; otherwise it answers for
+  // whichever fresh hash (nextTxHash) the request names.
+  const hashOf = (path: string): string | null => {
+    const match = /^\/transactions\/([0-9a-f]{64})/.exec(path);
+    if (!match) return null;
+    return overrides.txHash === undefined || overrides.txHash === match[1] ? match[1] : null;
+  };
   return (path: string) => {
-    if (path.startsWith(`/transactions/${hash}/operations`)) {
+    const hash = hashOf(path);
+    if (hash && path.startsWith(`/transactions/${hash}/operations`)) {
       return {
         status: 200,
         body: {
@@ -122,7 +129,7 @@ function paymentOn(overrides: {
       };
     }
 
-    if (path.startsWith(`/transactions/${hash}`)) {
+    if (hash && path.startsWith(`/transactions/${hash}`)) {
       return {
         status: 200,
         body: {

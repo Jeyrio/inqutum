@@ -4,7 +4,9 @@ import type { InvoiceCursor } from './invoice-cursor';
 import type { InvoiceStats } from './invoice-stats';
 import type {
   AuditEvent as InvoiceAuditEvent,
+  CancelInvoiceOptionsInput,
   InvoiceStatus,
+  MarkAsPaidOptionsInput,
   InvoiceStorage,
   OverduePendingInvoices,
   PayerInfo,
@@ -69,8 +71,8 @@ export class PostgresInvoiceStorage implements InvoiceStorage {
     return this.service.getInvoicesBySeller(sellerPublicKey, status, limit, offset, after);
   }
 
-  async cancelInvoice(id: string, expectedVersion?: number): Promise<StoredInvoice> {
-    return this.service.cancelInvoice(id, expectedVersion);
+  async cancelInvoice(id: string, options?: CancelInvoiceOptionsInput): Promise<StoredInvoice> {
+    return this.service.cancelInvoice(id, options);
   }
 
   async markAsPaid(
@@ -78,9 +80,9 @@ export class PostgresInvoiceStorage implements InvoiceStorage {
     txHash: string,
     payerPublicKey: string,
     payerInfo?: PayerInfo,
-    expectedVersion?: number
+    options?: MarkAsPaidOptionsInput
   ): Promise<StoredInvoice> {
-    return this.service.markAsPaid(id, txHash, payerPublicKey, payerInfo, expectedVersion);
+    return this.service.markAsPaid(id, txHash, payerPublicKey, payerInfo, options);
   }
 
   async getInvoiceStats(sellerPublicKey: string): Promise<InvoiceStats[]> {

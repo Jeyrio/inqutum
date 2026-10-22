@@ -2,9 +2,17 @@ import { v4 as uuidv4 } from 'uuid';
 import { calculateInvoiceStats } from './invoice-stats';
 import type { InvoiceStats } from './invoice-stats';
 import { isPendingInvoiceExpired } from '../domain/invoice-expiry';
-import type { AuditEvent, InvoiceStatus, StoredInvoice } from './invoice-storage';
+import type {
+  AuditEvent,
+  CancelInvoiceOptionsInput,
+  InvoiceStatus,
+  MarkAsPaidOptionsInput,
+  StoredInvoice,
+} from './invoice-storage';
+import { normalizeCancelOptions, normalizeMarkAsPaidOptions } from './invoice-storage';
+import { settlementFieldsForInvoice } from '../domain/invoice-settlement';
 import { checkVersion } from '../concurrency/optimistic-lock';
-import { MemoCollisionError, PaymentClaimIndex } from '../domain/payment-attribution';
+import { MemoCollisionError, PaymentClaimError, PaymentClaimIndex } from '../domain/payment-attribution';
 import type { PaymentClaim } from '../domain/payment-attribution';
 import { InvalidTransitionError, assertTransition } from '../../../shared/invoice-lifecycle';
 import type { InvoiceEvent } from '../../../shared/invoice-lifecycle';
@@ -32,12 +40,15 @@ class MemoryStorage {
   private lifecycleEvents: MemoryPaymentEvent[] = [];
 
   createInvoice(data: Partial<Invoice>): Invoice {
+    // The memo index is keyed by memo, so a second invoice carrying the same
+    // memo would overwrite the first one's entry and leave it unreachable by
+    // the payment monitor. Refuse first, so creation can draw another memo.
+    if (data.memo && this.invoicesByMemo.has(data.memo)) {
+      throw new MemoCollisionError(data.memo);
+    }
     const id = data.id || uuidv4();
     if (this.invoices.has(id)) {
       throw new Error(`Duplicate invoice ID collision: ${id}`);
-    }
-    if (data.memo && this.invoicesByMemo.has(data.memo)) {
-      throw new Error(`Duplicate invoice memo collision: ${data.memo}`);
     }
 
     const invoice: Invoice = {
@@ -61,13 +72,6 @@ class MemoryStorage {
       metadata: data.metadata,
       version: 1,
     };
-
-    // The memo index is keyed by memo, so a second invoice carrying the same
-    // memo would overwrite the first one's entry and leave it unreachable by
-    // the payment monitor. Refuse instead, and let creation draw another memo.
-    if (this.invoicesByMemo.has(invoice.memo)) {
-      throw new MemoCollisionError(invoice.memo);
-    }
 
     this.invoices.set(invoice.id, invoice);
     this.invoicesByMemo.set(invoice.memo, invoice.id);
@@ -162,7 +166,8 @@ class MemoryStorage {
   }
 
   // Cancel invoice
-  cancelInvoice(id: string, sellerPublicKey?: string): Invoice | undefined {
+  cancelInvoice(id: string, options?: CancelInvoiceOptionsInput): Invoice | undefined {
+    const { sellerPublicKey, expectedVersion } = normalizeCancelOptions(options);
     this.markExpiredInvoices();
     const invoice = this.invoices.get(id);
     if (!invoice) return undefined;
@@ -170,7 +175,7 @@ class MemoryStorage {
       throw new Error('Unauthorized: only the seller can cancel this invoice');
     }
     const to = assertTransition(invoice.status, 'CANCEL');
-    const updated = this.updateInvoice(id, { status: to, cancelledAt: new Date() });
+    const updated = this.updateInvoice(id, { status: to, cancelledAt: new Date() }, expectedVersion);
     if (updated) {
       this.recordLifecycleEvent(id, 'INVOICE_CANCELLED', {
         from: invoice.status,
@@ -187,8 +192,9 @@ class MemoryStorage {
     txHash: string,
     payerPublicKey: string,
     payerInfo?: { payerName?: string; payerEmail?: string },
-    expectedVersion?: number
+    options?: MarkAsPaidOptionsInput
   ): Invoice | undefined {
+    const { settledAt, expectedVersion } = normalizeMarkAsPaidOptions(options);
     this.markExpiredInvoices();
     const now = new Date();
     const invoice = this.invoices.get(id);
@@ -202,20 +208,47 @@ class MemoryStorage {
       throw new InvalidTransitionError('EXPIRED', to, event);
     }
 
-    for (const existing of this.invoices.values()) {
-      if (existing.id !== id && existing.paymentTxHash && existing.paymentTxHash === txHash) {
-        throw new Error(`Duplicate payment_tx_hash collision: ${txHash}`);
-      }
-    }
+    // An on-time payment settles now unless the ledger time is known; a late
+    // one (after cancel) needs the ledger time, or it cannot be classified.
+    const settlement = settlementFieldsForInvoice(
+      invoice,
+      settledAt ?? (invoice.status === 'PENDING' ? now : undefined)
+    );
 
-    return this.updateInvoice(id, {
-      status: 'PAID',
+    // One transaction settles one invoice. The claim reads and records in the
+    // same synchronous step, so a second caller holding the same hash gets a
+    // decision here rather than a second PAID transition.
+    const decision = this.paymentClaims.claim(txHash, id, now);
+    if (decision.kind === 'conflict') {
+      throw new PaymentClaimError(txHash, id, decision.claim.invoiceId);
+    }
+    if (decision.kind === 'replay') return undefined;
+
+    const updated = this.updateInvoice(id, {
+      status: to,
       paymentTxHash: txHash,
       payerPublicKey,
       payerName: payerInfo?.payerName,
       payerEmail: payerInfo?.payerEmail,
-      paidAt: new Date(),
+      paidAt: now,
+      cancelledAt: invoice.cancelledAt,
+      settledAt: settlement.settledAt,
+      settlementContext: settlement.settlementContext,
+      priorStatus: settlement.priorStatus,
+      latePaymentWarningCode: settlement.latePaymentWarningCode,
     }, expectedVersion);
+
+    if (updated) {
+      this.logPaymentEvent(id, 'PAYMENT_CONFIRMED', {
+        txHash,
+        payerPublicKey,
+        settledAt: settlement.settledAt.toISOString(),
+        settlementContext: settlement.settlementContext,
+        priorStatus: settlement.priorStatus,
+        latePaymentWarningCode: settlement.latePaymentWarningCode,
+      });
+    }
+    return updated;
   }
 
   // Get all invoices

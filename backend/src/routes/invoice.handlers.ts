@@ -25,7 +25,7 @@ import {
 } from '../services/payment-verification';
 import { isDemoEnvironment, simulationAllowed } from '../config/runtime';
 import { PaymentClaimError } from '../domain/payment-attribution';
-import { SettlementTimeUnavailableError } from '../domain/invoice-settlement';
+import { LATE_PAYMENT_WARNINGS, SettlementTimeUnavailableError } from '../domain/invoice-settlement';
 import { InvalidTransitionError, describeLifecycle } from '../../../shared/invoice-lifecycle';
 import { cacheVerificationResult } from '../middleware/verify-cache';
 import { emailAntiSpamService } from '../services/email-anti-spam.service';
@@ -783,7 +783,10 @@ export function createInvoiceHandlers(options: InvoiceHandlerOptions): InvoiceHa
         }
 
         const statusCheck = checkInvoiceIsPayable(invoice.status);
-        if (!statusCheck.ok) {
+        // A cancelled invoice can still be settled late: the funds already
+        // reached the seller, so the store records them with a warning
+        // (SETTLE_AFTER_CANCEL) instead of the verify path refusing them.
+        if (!statusCheck.ok && invoice.status !== 'CANCELLED') {
           const duration = performance.now() - start;
           metrics.recordOperation({
             operation: 'invoice.verify_payment',
@@ -872,7 +875,9 @@ export function createInvoiceHandlers(options: InvoiceHandlerOptions): InvoiceHa
             verification.value.txHash,
             verification.value.from,
             payerCheck.value,
-            paymentExpectedVersion
+            // Ledger close time classifies a late payment; the version guards
+            // against a concurrent change since the caller's read.
+            { settledAt: verification.value.settledAt, expectedVersion: paymentExpectedVersion }
           );
           
           // Cache successful verification
@@ -973,9 +978,13 @@ export function createInvoiceHandlers(options: InvoiceHandlerOptions): InvoiceHa
         metrics.recordFunnelStage('payment_verified');
 
         syncNotifications(updatedInvoice);
+        // A late payment is still a success, but the client must be told:
+        // the funds arrived after the invoice was cancelled.
+        const lateCode = updatedInvoice.latePaymentWarningCode;
         sendSuccess(res, 200, updatedInvoice, {
           message: 'Payment verified on Stellar',
           correlationId: corrId,
+          ...(lateCode ? { code: lateCode, warning: LATE_PAYMENT_WARNINGS[lateCode] } : {}),
         });
       } catch (error: any) {
         const duration = performance.now() - start;

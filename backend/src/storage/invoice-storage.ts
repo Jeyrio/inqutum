@@ -83,6 +83,39 @@ export interface AuditEvent {
   createdAt: Date;
 }
 
+/**
+ * How a payment settles an invoice. Both are optional and independent:
+ * `settledAt` is the Horizon ledger close time (required to settle a CANCELLED
+ * invoice late, and recorded on every settlement); `expectedVersion` is the
+ * optimistic-lock token from a prior read.
+ */
+export interface MarkAsPaidOptions {
+  settledAt?: Date;
+  expectedVersion?: number;
+}
+
+/** `sellerPublicKey` restricts the cancel to that seller; `expectedVersion` is the lock token. */
+export interface CancelInvoiceOptions {
+  sellerPublicKey?: string;
+  expectedVersion?: number;
+}
+
+/** Callers predating the options object pass a bare version number. */
+export type MarkAsPaidOptionsInput = MarkAsPaidOptions | number;
+/** Callers pass a seller key (ownership) or a version number (lock), or both as an object. */
+export type CancelInvoiceOptionsInput = CancelInvoiceOptions | string | number;
+
+export function normalizeMarkAsPaidOptions(input?: MarkAsPaidOptionsInput): MarkAsPaidOptions {
+  if (typeof input === 'number') return { expectedVersion: input };
+  return input ?? {};
+}
+
+export function normalizeCancelOptions(input?: CancelInvoiceOptionsInput): CancelInvoiceOptions {
+  if (typeof input === 'number') return { expectedVersion: input };
+  if (typeof input === 'string') return input ? { sellerPublicKey: input } : {};
+  return input ?? {};
+}
+
 export interface OverduePendingInvoices {
   total: number;
   /** Oldest expiry first. */
@@ -135,13 +168,19 @@ export interface InvoiceStorage {
     offset?: number,
     after?: InvoiceCursor
   ): Promise<StoredInvoice[]>;
-  cancelInvoice(id: string, expectedVersion?: number): Promise<StoredInvoice>;
+  /** PENDING -> CANCELLED. Records `cancelledAt` and an INVOICE_CANCELLED event. */
+  cancelInvoice(id: string, options?: CancelInvoiceOptionsInput): Promise<StoredInvoice>;
+  /**
+   * PENDING -> PAID on time, or CANCELLED -> PAID late (SETTLE_AFTER_CANCEL)
+   * when a ledger `settledAt` is known. Records the settlement fields and a
+   * PAYMENT_CONFIRMED event; honours `expectedVersion` when given.
+   */
   markAsPaid(
     id: string,
     txHash: string,
     payerPublicKey: string,
     payerInfo?: PayerInfo,
-    expectedVersion?: number
+    options?: MarkAsPaidOptionsInput
   ): Promise<StoredInvoice>;
   getInvoiceStats(sellerPublicKey: string): Promise<InvoiceStats[]>;
   /** Explicit maintenance hook; reads also apply this transition lazily. */

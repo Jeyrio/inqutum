@@ -97,7 +97,7 @@ export class PaymentClaimError extends Error {
     readonly invoiceId: string,
     readonly settledInvoiceId: string
   ) {
-    super('Transaction ' + txHash + ' already settled invoice ' + settledInvoiceId);
+    super('Duplicate payment: transaction ' + txHash + ' already settled invoice ' + settledInvoiceId);
     this.name = 'PaymentClaimError';
   }
 }

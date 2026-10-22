@@ -147,22 +147,30 @@ function createFakePostgres() {
       return { rows: expired.map(row => ({ id: row.id })), rowCount: expired.length };
     }
 
-    if (sql.startsWith("UPDATE invoices SET status = 'PAID'")) {
+    if (sql.startsWith('WITH settled AS')) {
+      // Mirrors InvoiceService.markAsPaid: [id, tx, payer, name, email,
+      // settledAt?, version?]. PENDING settles on time; CANCELLED settles late
+      // only with a ledger time.
       const txHash = params[1];
       if (txHash && rows.some(r => r.id !== params[0] && r.payment_tx_hash === txHash)) {
         throw new Error('duplicate key value violates unique constraint "idx_invoices_payment_tx_hash"');
       }
-      // Mirrors InvoiceService.markAsPaid: PENDING and unexpired, optionally
-      // pinned to `version = $6` (optimistic locking).
+      const settledAt = params[5] ? new Date(params[5]) : new Date();
+      const expectedVersion = params[6] ?? null;
       const row = rows.find(
         candidate => candidate.id === params[0] &&
-          candidate.status === 'PENDING' &&
-          new Date(candidate.expires_at).getTime() > Date.now() &&
-          (!sql.includes('version = $6') || candidate.version === params[5])
+          (expectedVersion === null || candidate.version === expectedVersion) &&
+          (
+            (candidate.status === 'PENDING' && new Date(candidate.expires_at).getTime() > Date.now()) ||
+            (candidate.status === 'CANCELLED' && candidate.cancelled_at && params[5])
+          )
       );
       if (!row) {
         return { rows: [], rowCount: 0 };
       }
+      const priorStatus = row.status;
+      const afterCancel =
+        priorStatus === 'CANCELLED' && settledAt.getTime() >= new Date(row.cancelled_at).getTime();
       Object.assign(row, {
         status: 'PAID',
         payment_tx_hash: params[1],
@@ -170,17 +178,25 @@ function createFakePostgres() {
         payer_name: params[3],
         payer_email: params[4],
         paid_at: new Date(),
+        settled_at: settledAt,
+        settlement_context: afterCancel ? 'AFTER_CANCEL' : 'ON_TIME',
+        prior_status: priorStatus === 'CANCELLED' ? 'CANCELLED' : null,
+        late_payment_warning_code: afterCancel ? 'PAYMENT_RECEIVED_AFTER_CANCEL' : null,
         version: row.version + 1,
       });
+      events.push({ invoiceId: row.id, eventType: 'PAYMENT_CONFIRMED' });
       return { rows: [clone(row)], rowCount: 1 };
     }
 
     if (sql.startsWith("UPDATE invoices SET status = 'CANCELLED'")) {
-      // Mirrors InvoiceService.cancelInvoice, optionally pinned to `version = $2`.
+      // Mirrors InvoiceService.cancelInvoice: [id, sellerPublicKey?, version?].
+      const sellerPublicKey = params[1] ?? null;
+      const expectedVersion = params[2] ?? null;
       const row = rows.find(
         candidate => candidate.id === params[0] &&
           candidate.status === 'PENDING' &&
-          (!sql.includes('version = $2') || candidate.version === params[1])
+          (!sellerPublicKey || candidate.seller_public_key === sellerPublicKey) &&
+          (expectedVersion === null || candidate.version === expectedVersion)
       );
       if (!row) {
         return { rows: [], rowCount: 0 };

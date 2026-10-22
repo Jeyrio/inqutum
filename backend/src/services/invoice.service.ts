@@ -13,7 +13,14 @@ import type {
 } from '../domain/invoice-settlement';
 import { SettlementTimeUnavailableError } from '../domain/invoice-settlement';
 import { PaymentClaimError } from '../domain/payment-attribution';
-import { InvalidTransitionError } from '../../../shared/invoice-lifecycle';
+import { InvalidTransitionError, assertTransition } from '../../../shared/invoice-lifecycle';
+import type { InvoiceEvent } from '../../../shared/invoice-lifecycle';
+import {
+  normalizeCancelOptions,
+  normalizeMarkAsPaidOptions,
+  type CancelInvoiceOptionsInput,
+  type MarkAsPaidOptionsInput,
+} from '../storage/invoice-storage';
 import type { ReconciliationInvoice, ReconciliationSettlement } from '../domain/reconciliation';
 
 // PostgreSQL invoice service. Kept behaviourally identical to
@@ -220,42 +227,98 @@ export class InvoiceService {
     txHash: string,
     payerPublicKey: string,
     payerInfo?: { payerName?: string; payerEmail?: string },
-    expectedVersion?: number
+    options?: MarkAsPaidOptionsInput
   ): Promise<Invoice> {
-    let query: string;
-    let params: any[];
-
-    if (expectedVersion !== undefined) {
-      query = `
+    const { settledAt, expectedVersion } = normalizeMarkAsPaidOptions(options);
+    // One statement settles the invoice and records PAYMENT_CONFIRMED, so the
+    // audit row can never be missing for a settled invoice. PENDING settles on
+    // time; CANCELLED settles late only with a ledger close time (restored from
+    // before #328). `version` is bumped on every settlement and, when the caller
+    // read one, must still match (optimistic locking, #328).
+    const query = `
+      WITH settled AS (
         UPDATE invoices
-        SET status = 'PAID', payment_tx_hash = $2, payer_public_key = $3, paid_at = NOW(),
-            payer_name = $4, payer_email = $5, version = version + 1
-        WHERE id = $1 AND status = 'PENDING' AND expires_at > NOW() AND version = $6
+        SET status = 'PAID',
+            payment_tx_hash = $2,
+            payer_public_key = $3,
+            paid_at = NOW(),
+            payer_name = $4,
+            payer_email = $5,
+            settled_at = COALESCE($6::timestamptz, NOW()),
+            settlement_context = CASE
+              WHEN status = 'CANCELLED' AND $6::timestamptz >= cancelled_at THEN 'AFTER_CANCEL'
+              ELSE 'ON_TIME'
+            END,
+            prior_status = CASE
+              WHEN status = 'CANCELLED' THEN status
+              ELSE NULL
+            END,
+            late_payment_warning_code = CASE
+              WHEN status = 'CANCELLED' AND $6::timestamptz >= cancelled_at THEN 'PAYMENT_RECEIVED_AFTER_CANCEL'
+              ELSE NULL
+            END,
+            version = version + 1
+        WHERE id = $1
+          AND (
+            (status = 'PENDING' AND expires_at > NOW())
+            OR (status = 'CANCELLED' AND cancelled_at IS NOT NULL AND $6::timestamptz IS NOT NULL)
+          )
+          AND ($7::integer IS NULL OR version = $7)
         RETURNING *
-      `;
-      params = [invoiceId, txHash, payerPublicKey, payerInfo?.payerName || null, payerInfo?.payerEmail || null, expectedVersion];
-    } else {
-      query = `
-        UPDATE invoices
-        SET status = 'PAID', payment_tx_hash = $2, payer_public_key = $3, paid_at = NOW(),
-            payer_name = $4, payer_email = $5, version = version + 1
-        WHERE id = $1 AND status = 'PENDING' AND expires_at > NOW()
-        RETURNING *
-      `;
-      params = [invoiceId, txHash, payerPublicKey, payerInfo?.payerName || null, payerInfo?.payerEmail || null];
-    }
+      ),
+      payment_event AS (
+        INSERT INTO payment_events (invoice_id, event_type, event_data)
+        SELECT
+          id,
+          'PAYMENT_CONFIRMED',
+          jsonb_strip_nulls(jsonb_build_object(
+            'txHash', $2::text,
+            'payerPublicKey', $3::text,
+            'settledAt', settled_at,
+            'settlementContext', settlement_context,
+            'priorStatus', prior_status,
+            'latePaymentWarningCode', late_payment_warning_code
+          ))
+        FROM settled
+        RETURNING id
+      )
+      SELECT * FROM settled
+    `;
+    const params = [
+      invoiceId,
+      txHash,
+      payerPublicKey,
+      payerInfo?.payerName || null,
+      payerInfo?.payerEmail || null,
+      settledAt ?? null,
+      expectedVersion ?? null,
+    ];
 
     try {
       const result = await this.db.query(query, params);
 
       if (result.rows.length === 0) {
-        if (expectedVersion !== undefined) {
-          const check = await this.db.query('SELECT version FROM invoices WHERE id = $1', [invoiceId]);
-          if (check.rows.length > 0) {
-            throw new ConflictError(check.rows[0].version, expectedVersion);
-          }
+        const existing = await this.db.query('SELECT * FROM invoices WHERE id = $1', [invoiceId]);
+        const row = existing.rows[0];
+        if (!row) {
+          throw new Error('Invoice not found');
         }
-        throw new Error('Invoice not found, expired, or already processed');
+        if (expectedVersion !== undefined && row.version !== expectedVersion) {
+          throw new ConflictError(row.version, expectedVersion);
+        }
+        if (row.status === 'CANCELLED' && !settledAt) {
+          throw new SettlementTimeUnavailableError();
+        }
+        // The guarded UPDATE matched nothing, so the invoice is not in a state
+        // that can settle. Ask the lifecycle why, so the refusal is the same
+        // one the memory store gives. A PENDING row that reached this point
+        // has crossed its expiry, which the sweep had not yet recorded.
+        const pastExpiry = row.status === 'PENDING' && new Date(row.expires_at).getTime() <= Date.now();
+        const current: string = pastExpiry ? 'EXPIRED' : row.status;
+        const event: InvoiceEvent = current === 'CANCELLED' ? 'SETTLE_AFTER_CANCEL' : 'SETTLE';
+        assertTransition(current, event);
+        // Unreachable when the lifecycle and the UPDATE's WHERE clause agree.
+        throw new InvalidTransitionError(current, 'PAID', event);
       }
 
       console.log('✅ Invoice marked as paid:', invoiceId);
@@ -326,40 +389,38 @@ export class InvoiceService {
   /**
    * Cancel an invoice
    */
-  async cancelInvoice(invoiceId: string, expectedVersion?: number): Promise<Invoice> {
+  async cancelInvoice(invoiceId: string, options?: CancelInvoiceOptionsInput): Promise<Invoice> {
+    const { sellerPublicKey, expectedVersion } = normalizeCancelOptions(options);
     await this.markExpiredInvoices();
 
-    let query: string;
-    let params: any[];
-
-    if (expectedVersion !== undefined) {
-      query = `
+    const result = await this.db.query(
+      `
         UPDATE invoices
         SET status = 'CANCELLED', cancelled_at = NOW(), version = version + 1
-        WHERE id = $1 AND status = 'PENDING' AND version = $2
+        WHERE id = $1
+          AND status = 'PENDING'
+          AND ($2::text IS NULL OR seller_public_key = $2)
+          AND ($3::integer IS NULL OR version = $3)
         RETURNING *
-      `;
-      params = [invoiceId, expectedVersion];
-    } else {
-      query = `
-        UPDATE invoices
-        SET status = 'CANCELLED', cancelled_at = NOW(), version = version + 1
-        WHERE id = $1 AND status = 'PENDING'
-        RETURNING *
-      `;
-      params = [invoiceId];
-    }
-
-    const result = await this.db.query(query, params);
+      `,
+      [invoiceId, sellerPublicKey ?? null, expectedVersion ?? null]
+    );
 
     if (result.rows.length === 0) {
-      if (expectedVersion !== undefined) {
-        const check = await this.db.query('SELECT version FROM invoices WHERE id = $1', [invoiceId]);
-        if (check.rows.length > 0) {
-          throw new ConflictError(check.rows[0].version, expectedVersion);
-        }
+      const existing = await this.db.query('SELECT * FROM invoices WHERE id = $1', [invoiceId]);
+      const row = existing.rows[0];
+      if (!row) {
+        throw new Error('Invoice not found');
       }
-      throw new Error('Invoice not found or already processed');
+      if (sellerPublicKey && row.seller_public_key !== sellerPublicKey) {
+        throw new Error('Unauthorized: only the seller can cancel this invoice');
+      }
+      if (expectedVersion !== undefined && row.version !== expectedVersion) {
+        throw new ConflictError(row.version, expectedVersion);
+      }
+      // Same refusal the memory store gives for a cancel the lifecycle forbids.
+      assertTransition(row.status, 'CANCEL');
+      throw new InvalidTransitionError(row.status, 'CANCELLED', 'CANCEL');
     }
 
     await this.recordLifecycleEvent(invoiceId, 'INVOICE_CANCELLED', {

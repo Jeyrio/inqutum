@@ -47,6 +47,7 @@ class FakeInvoiceDb implements Queryable {
       row.settlement_context = null;
       row.prior_status = null;
       row.late_payment_warning_code = null;
+      row.version = 1;
       this.rows.push(row);
       return { rows: [{ ...row }], rowCount: 1 };
     }
@@ -63,11 +64,13 @@ class FakeInvoiceDb implements Queryable {
     if (sql.startsWith("UPDATE invoices SET status = 'PAID'") || sql.startsWith('WITH settled AS')) {
       const now = Date.now();
       const settledAt = params[5] ? new Date(params[5]) : new Date();
+      const expectedVersion = params[6] ?? null;
       const row = this.rows.find(
         candidate => candidate.id === params[0] &&
+          (expectedVersion === null || candidate.version === expectedVersion) &&
           (
             (candidate.status === 'PENDING' && new Date(candidate.expires_at).getTime() > now) ||
-            (candidate.status === 'CANCELLED' && candidate.cancelled_at && Number.isFinite(settledAt.getTime()))
+            (candidate.status === 'CANCELLED' && candidate.cancelled_at && params[5])
           )
       );
       if (!row) {
@@ -87,21 +90,25 @@ class FakeInvoiceDb implements Queryable {
       row.settlement_context = afterCancel ? 'AFTER_CANCEL' : 'ON_TIME';
       row.prior_status = priorStatus === 'CANCELLED' ? 'CANCELLED' : null;
       row.late_payment_warning_code = afterCancel ? 'PAYMENT_RECEIVED_AFTER_CANCEL' : null;
+      row.version += 1;
       return { rows: [{ ...row }], rowCount: 1 };
     }
 
     if (sql.startsWith("UPDATE invoices SET status = 'CANCELLED'")) {
       const sellerPublicKey = params[1] ?? null;
+      const expectedVersion = params[2] ?? null;
       const row = this.rows.find(
         candidate => candidate.id === params[0] &&
           candidate.status === 'PENDING' &&
-          (!sellerPublicKey || candidate.seller_public_key === sellerPublicKey)
+          (!sellerPublicKey || candidate.seller_public_key === sellerPublicKey) &&
+          (expectedVersion === null || candidate.version === expectedVersion)
       );
       if (!row) {
         return { rows: [], rowCount: 0 };
       }
       row.status = 'CANCELLED';
       row.cancelled_at = new Date();
+      row.version += 1;
       return { rows: [{ ...row }], rowCount: 1 };
     }
 
