@@ -125,7 +125,22 @@ export class DeterministicReplayEngine {
     for (let i = 0; i < scheduled.length; i++) {
       const event = scheduled[i];
 
-      // 1. Idempotency Check (Retry Handling)
+      // 1. Simulated Network Drop: a dropped request never reaches the server,
+      //    so it is checked before the idempotency cache, whatever the order.
+      if (event.shouldFailNetwork) {
+        this.trace.push({
+          stepIndex: this.trace.length,
+          eventId: event.id,
+          clientId: event.clientId,
+          action: event.action,
+          status: 'NETWORK_ERROR',
+          resultingVersion: this.resource.version,
+          error: 'SIMULATED_TRANSIENT_NETWORK_DROP',
+        });
+        continue;
+      }
+
+      // 2. Idempotency Check (Retry Handling)
       if (event.idempotencyKey && this.idempotencyCache.has(event.idempotencyKey)) {
         const cached = this.idempotencyCache.get(event.idempotencyKey)!;
         retriesHandled++;
@@ -136,20 +151,6 @@ export class DeterministicReplayEngine {
           action: event.action,
           status: 'IDEMPOTENT_HIT',
           resultingVersion: cached.resultingVersion,
-        });
-        continue;
-      }
-
-      // 2. Simulated Network Drop
-      if (event.shouldFailNetwork) {
-        this.trace.push({
-          stepIndex: this.trace.length,
-          eventId: event.id,
-          clientId: event.clientId,
-          action: event.action,
-          status: 'NETWORK_ERROR',
-          resultingVersion: this.resource.version,
-          error: 'SIMULATED_TRANSIENT_NETWORK_DROP',
         });
         continue;
       }

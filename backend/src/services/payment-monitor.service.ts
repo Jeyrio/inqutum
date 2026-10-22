@@ -1,5 +1,28 @@
 import path from 'node:path';
-import stellarService, { PaymentPageRecord, PaymentRecord } from './stellar.service';
+import stellarService, {
+  PaymentPageRecord,
+  PaymentRecord,
+  isValidStellarAmount,
+  isValidStellarPublicKey,
+} from './stellar.service';
+
+const TX_HASH_PATTERN = /^[0-9a-f]{64}$/i;
+
+/**
+ * Boundary check on a Horizon payment before it can touch an invoice: a real
+ * transaction hash, well-formed accounts, and a positive amount within Stellar's
+ * 7-decimal precision. Anything else is skipped, never settled.
+ */
+export function isUsablePaymentRecord(payment: Partial<PaymentRecord> | null | undefined): payment is PaymentRecord {
+  return (
+    !!payment &&
+    typeof payment.txHash === 'string' &&
+    TX_HASH_PATTERN.test(payment.txHash) &&
+    isValidStellarPublicKey(payment.from) &&
+    isValidStellarPublicKey(payment.to) &&
+    isValidStellarAmount(payment.amount)
+  );
+}
 import invoiceService, { InvoiceService, Queryable } from './invoice.service';
 import { SELLER_PUBLIC_KEY, STELLAR_NETWORK } from '../config/stellar';
 import { pool } from '../config/database';

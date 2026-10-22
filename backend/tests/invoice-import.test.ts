@@ -30,7 +30,8 @@ import {
 
 const SELLER = `G${'A'.repeat(55)}`;
 const OTHER_SELLER = `G${'B'.repeat(55)}`;
-const ISSUER = `G${'C'.repeat(55)}`;
+// A real (checksum-valid) key: issuers are validated as Ed25519 strkeys.
+const ISSUER = 'GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57';
 
 function csv(rows: Record<string, string>[], header?: string[]): string {
   const columns = header ?? ['externalId', 'sellerPublicKey', 'amount', 'description'];

@@ -132,8 +132,9 @@ export class BackpressureController {
     }
   }
 
+  /** Smallest depth at or above the high-watermark ratio (ceil: floor shed early on small queues). */
   get highWatermarkDepth(): number {
-    return Math.floor(this.config.maxQueueDepth * this.config.highWatermarkRatio);
+    return Math.ceil(this.config.maxQueueDepth * this.config.highWatermarkRatio);
   }
 
   get lowWatermarkDepth(): number {

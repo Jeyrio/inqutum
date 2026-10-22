@@ -138,19 +138,12 @@ describe('verifyHorizonPayment — happy path', () => {
     assert.equal(result.ok, true);
   });
 
-  it('rejects path payments even when their destination and amount match', () => {
-    assert.equal(
-      codeOf(verifyHorizonPayment(
-        input({ operations: [{ ...paymentOp(), type: 'path_payment_strict_receive' }] })
-      )),
-      'NO_PAYMENT_OPERATION'
-    );
-    assert.equal(
-      codeOf(verifyHorizonPayment(
-        input({ operations: [{ ...paymentOp(), type: 'path_payment_strict_send' }] })
-      )),
-      'NO_PAYMENT_OPERATION'
-    );
+  // Path payments that deliver the invoiced asset and amount settle the
+  // invoice, as the USDC edge-case suite (#378) and pre-#328 code require.
+  it('accepts path payments whose delivered destination and amount match', () => {
+    for (const type of ['path_payment_strict_receive', 'path_payment_strict_send']) {
+      assert.equal(verifyHorizonPayment(input({ operations: [{ ...paymentOp(), type }] })).ok, true, type);
+    }
   });
 
   it('chooses a later payment op whose asset matches when an earlier match does not', () => {

@@ -337,8 +337,9 @@ export class InvariantValidator {
       });
     }
 
-    // If settling to PAID, verify balance settlement completeness
-    if (input.targetStatus === 'PAID') {
+    // A settlement into PAID must be fully paid. Re-applying PAID to an invoice
+    // that is already PAID settles nothing, so there is no balance to check.
+    if (input.targetStatus === 'PAID' && input.currentStatus !== 'PAID') {
       const required = input.requiredAmountStroops ?? 0n;
       const settled = input.settledAmountStroops ?? 0n;
       if (settled < required || required <= 0n) {

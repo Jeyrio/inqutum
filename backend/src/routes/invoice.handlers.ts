@@ -23,7 +23,7 @@ import {
   messageForCode,
   verifyHorizonPayment,
 } from '../services/payment-verification';
-import { isDemoEnvironment, simulationAllowed } from '../config/runtime';
+import { cutoverDrainMode, isDemoEnvironment, simulationAllowed } from '../config/runtime';
 import { PaymentClaimError } from '../domain/payment-attribution';
 import { LATE_PAYMENT_WARNINGS, SettlementTimeUnavailableError } from '../domain/invoice-settlement';
 import { InvalidTransitionError, describeLifecycle } from '../../../shared/invoice-lifecycle';
@@ -212,6 +212,11 @@ export function createInvoiceHandlers(options: InvoiceHandlerOptions): InvoiceHa
     },
 
     async createInvoice(req: Request, res: Response) {
+      // Cutover drain (restored after #328): no new invoices while data moves;
+      // existing invoices stay readable and payable.
+      if (cutoverDrainMode()) {
+        return sendFailure(res, 503, 'System is in cutover drain mode. New invoice creation is temporarily paused.');
+      }
       const start = performance.now();
       const corrId = req.correlationId || `req-${Date.now().toString(36)}`;
 
