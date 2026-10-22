@@ -1,3 +1,5 @@
+import { isPendingInvoice } from '../utils/stats-pending-filter';
+
 // Projection of StoredInvoice used by the dashboard stats aggregator. Uses a
 // strict subset of StoredInvoice fields so both storage backends can feed the
 // same pure calculateInvoiceStats helper without re-mapping types — the memory

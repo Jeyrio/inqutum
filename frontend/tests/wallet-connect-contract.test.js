@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   describeStellarNetworkError,
-} = require('../lib/stellar');
+  isHorizonUnreachable,
+} = require('../lib/stellar-network-error.js');
 
 test('wallet connect contract - success case', () => {
   const balances = [{ assetCode: 'XLM', balance: '100.5' }];
@@ -61,9 +62,8 @@ test('wallet connect contract - retry condition detection', () => {
   const retryableError = { code: 'ETIMEDOUT' };
   const nonRetryableError = { message: 'Invalid account' };
 
-  const isRetryable = (error) => {
-    return ['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT'].includes(error?.code) || !error?.response;
-  };
+  // Retry only when Horizon was not reached; the same rule the copy above uses.
+  const isRetryable = isHorizonUnreachable;
 
   assert.ok(isRetryable(retryableError), 'timeout should be retryable');
   assert.ok(!isRetryable(nonRetryableError), 'validation error should not be retryable');

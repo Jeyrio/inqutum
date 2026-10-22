@@ -19,7 +19,7 @@
  */
 
 import * as crypto from 'crypto';
-import { canonicalizeJson } from './canonical-serialization';
+import { canonicalize as canonicalizeJson } from './canonical-serialization';
 
 export interface ExternalEvidencePayload {
   evidenceId: string;

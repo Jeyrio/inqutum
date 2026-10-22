@@ -4,7 +4,15 @@ import type {
   SettlementContext,
 } from '../domain/invoice-settlement';
 import type { InvoiceStats } from './invoice-stats';
-import type { AuditEvent, AuditFilter, AuditQueryResult } from '../audit/audit-service';
+import type {
+  AuditEvent as AuditLogEvent,
+  AuditFilter,
+  AuditQueryResult,
+} from '../audit/audit-service';
+import type {
+  ReconciliationInvoice,
+  ReconciliationSettlement,
+} from '../domain/reconciliation';
 
 // Shared shape and shared storage contract. Both MemoryInvoiceStorage and
 // PostgresInvoiceStorage implement these methods with the same semantics,
@@ -61,6 +69,20 @@ export interface PayerInfo {
   payerEmail?: string;
 }
 
+/**
+ * One row of an invoice's own history: a state change or payment event that
+ * affected the user or their funds. Backed by `payment_events` in Postgres and
+ * an in-process list in the memory store. Distinct from the hash-chained
+ * operator audit log in `audit/audit-service.ts`.
+ */
+export interface AuditEvent {
+  id: string;
+  invoiceId: string;
+  eventType: string;
+  eventData: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
 export interface OverduePendingInvoices {
   total: number;
   /** Oldest expiry first. */
@@ -79,6 +101,29 @@ export interface InvoiceStorage {
 
   createInvoice(input: CreateInvoiceInput): Promise<StoredInvoice>;
   getInvoiceById(id: string): Promise<StoredInvoice | null>;
+  /**
+   * Read-only lookup by import key (issue #53).
+   *
+   * Unlike getInvoiceById this MUST NOT apply the lazy expiry transition:
+   * import dry runs resolve every row through this method and are required to
+   * perform no persistent writes.
+   */
+  getInvoiceByExternalId(externalId: string): Promise<StoredInvoice | null>;
+  /**
+   * Patch only the descriptive fields of an existing invoice (issue #53).
+   * Financial and lifecycle columns are deliberately not patchable. Returns
+   * null when the invoice does not exist.
+   */
+  updateInvoiceMutableFields(
+    id: string,
+    patch: {
+      description?: string;
+      customerName?: string;
+      customerEmail?: string;
+      sellerName?: string;
+      sellerEmail?: string;
+    }
+  ): Promise<StoredInvoice | null>;
   /**
    * Newest first by (createdAt, id). Pass `after` for keyset pagination;
    * `offset` is kept for older clients and is unstable under inserts.
@@ -109,8 +154,30 @@ export interface InvoiceStorage {
   /** Retrieve all stored invoices for operations, diagnostics, and policy simulations */
   getAllInvoices?(filter?: { status?: string }): Promise<StoredInvoice[]>;
 
-  // Audit trail methods
-  recordAuditEvent?(event: Omit<AuditEvent, 'id' | 'timestamp'> & { timestamp?: string }): Promise<AuditEvent>;
+  /** Returns total count of invoices currently stored. */
+  countInvoices?(): Promise<number>;
+  /** Purges expired or historical settled demo invoices older than maxAgeHours. */
+  purgeStaleInvoices?(options: { maxAgeHours: number; statuses?: InvoiceStatus[] }): Promise<number>;
+  /** The invoice's own history (`payment_events`), oldest first. */
+  getAuditTrail(invoiceId: string): Promise<AuditEvent[]>;
+
+  // --- Read-only access for reconciliation (docs/RECONCILIATION.md) ---
+  //
+  // Every other read here applies the expiry sweep first, which *writes*. These
+  // never write: a reconciliation that changed the data it is checking could
+  // not report stale records, and could not be run against production safely.
+
+  /** Every invoice exactly as stored, with amounts kept exact. */
+  listInvoicesForReconciliation(): Promise<ReconciliationInvoice[]>;
+  /** Every invoice history event, oldest first. */
+  listAuditEvents(): Promise<AuditEvent[]>;
+  /** Same figures as getInvoiceStats, without the expiry sweep. */
+  readInvoiceStats(sellerPublicKey: string): Promise<InvoiceStats[]>;
+  /** Settlement references held apart from the invoice rows, or null if this backend keeps none. */
+  listSettlements(): Promise<ReconciliationSettlement[] | null>;
+
+  // Operator audit log (audit/audit-service.ts)
+  recordAuditEvent?(event: Omit<AuditLogEvent, 'id' | 'timestamp'> & { timestamp?: string }): Promise<AuditLogEvent>;
   getAuditEvents?(filter?: AuditFilter): Promise<AuditQueryResult>;
-  getAuditEventsByInvoice?(invoiceId: string): Promise<AuditEvent[]>;
+  getAuditEventsByInvoice?(invoiceId: string): Promise<AuditLogEvent[]>;
 }

@@ -15,6 +15,8 @@ import { PostgresJobStore } from './jobs/postgres-job-store';
 import { registerJobHandlers, startExpiryScheduler } from './jobs/runtime';
 import { buildUserSafeErrorResponse, classifyError } from './errors/error-taxonomy';
 import { validateEnvironment } from './config/env-validator';
+import { RetentionService, startRetentionScheduler } from './retention/retention-service';
+import { PostgresRetentionStore } from './retention/postgres-retention-store';
 
 dotenv.config();
 assertSafeEnvironment();

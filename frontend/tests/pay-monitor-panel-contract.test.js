@@ -71,7 +71,7 @@ test('pay monitor panel contract - error state handling', () => {
   assert.equal(errorState.icon, 'alert-triangle');
 });
 
-test('pay monitor panel contract - retry behavior', () => {
+test('pay monitor panel contract - retry behavior', async () => {
   const handleRetry = async (previousError) => {
     if (!previousError) {
       throw new Error('No previous error to retry');
@@ -80,7 +80,8 @@ test('pay monitor panel contract - retry behavior', () => {
   };
 
   const error = new Error('Network timeout');
-  const result = handleRetry(error);
+  // handleRetry is async: assert on the resolved value, not the pending Promise.
+  const result = await handleRetry(error);
   assert.ok(result.success);
   assert.ok(result.retried);
 });

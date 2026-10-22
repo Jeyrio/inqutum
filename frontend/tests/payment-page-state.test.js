@@ -47,8 +47,8 @@ test('stale pending data fails closed after expiresAt', () => {
 });
 
 test('keeps payment controls available for an unpaid pending invoice', () => {
-  assert.equal(shouldShowPaymentControls('PENDING'), true);
-  assert.equal(shouldShowPaymentControls('PENDING', 'existing-transaction'), false);
+  assert.equal(shouldShowPaymentControls({ status: 'PENDING' }), true);
+  assert.equal(shouldShowPaymentControls({ status: 'PENDING' }, 'existing-transaction'), false);
 });
 
 test('paid, pending, and expired components are mutually exclusive', () => {

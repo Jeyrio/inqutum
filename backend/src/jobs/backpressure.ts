@@ -19,7 +19,8 @@
  *    with bounded randomized jitter to avoid thundering herd reconnection storms.
  */
 
-import { Job, JobQueue, JobStore, EnqueueOptions, RetryPolicy, DEFAULT_RETRY_POLICY } from './job-types';
+import { Job, JobStore, EnqueueOptions, RetryPolicy, DEFAULT_RETRY_POLICY } from './job-types';
+import { JobQueue } from './worker';
 
 export type BackpressureState = 'NORMAL' | 'DEGRADED' | 'REJECTING';
 

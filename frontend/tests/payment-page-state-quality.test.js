@@ -75,6 +75,7 @@ test('Issue #151: shouldShowPaymentControls returns true only for valid actionab
 test('Issue #151: getPayPageView presentation contract', () => {
   assert.deepEqual(getPayPageView(null), {
     expired: false,
+    cancelled: false,
     paid: false,
     showPaymentControls: false,
     showProof: false,

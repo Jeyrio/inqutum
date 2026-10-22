@@ -43,9 +43,38 @@ export function configuredFrontendOrigins(
   return [...new Set(origins)];
 }
 
+/** Public demo deployments (DEMO_MODE, PUBLIC_DEMO or NODE_ENV=demo). */
+export function isDemoEnvironment(env: RuntimeEnvironment = process.env || {}): boolean {
+  const safeEnv = env || {};
+  return safeEnv.DEMO_MODE === 'true' || safeEnv.PUBLIC_DEMO === 'true' || safeEnv.NODE_ENV === 'demo';
+}
+
+/** Simulated payments are never allowed in production or on a public demo. */
 export function simulationAllowed(env: RuntimeEnvironment = process.env || {}): boolean {
   const safeEnv = env || {};
-  return safeEnv.NODE_ENV !== 'production' && safeEnv.ALLOW_SIMULATE === 'true';
+  return (
+    safeEnv.NODE_ENV !== 'production' &&
+    !isDemoEnvironment(safeEnv) &&
+    safeEnv.ALLOW_SIMULATE === 'true'
+  );
+}
+
+/**
+ * Hard fail at boot if sensitive simulation flags are set in production or public demo environments.
+ * Prevents catastrophic fake-payment exposure on live deployments.
+ */
+export function assertSafeEnvironment(env: RuntimeEnvironment = process.env || {}): void {
+  const safeEnv = env || {};
+  if (safeEnv.NODE_ENV === 'production' && safeEnv.ALLOW_SIMULATE === 'true') {
+    throw new Error(
+      'CRITICAL SECURITY CONFIGURATION ERROR: ALLOW_SIMULATE=true is strictly forbidden when NODE_ENV=production. Refusing to boot server.'
+    );
+  }
+  if (isDemoEnvironment(safeEnv) && safeEnv.ALLOW_SIMULATE === 'true') {
+    throw new Error(
+      'CRITICAL SECURITY CONFIGURATION ERROR: ALLOW_SIMULATE=true is strictly forbidden in public demo environments. Refusing to boot server.'
+    );
+  }
 }
 
 export function deploymentReadiness(

@@ -112,7 +112,9 @@ export function requirePermission(permission: Permission): PermissionGuard {
             : 'Authentication required';
       return sendFailure(res, 401, reason, { code: 'UNAUTHENTICATED' });
     }
-    return sendFailure(res, 403, 'Your role is not permitted to perform this action', { code: 'FORBIDDEN' });
+    return sendFailure(res, 403, 'Your role is not permitted to perform this action', 'FORBIDDEN', {
+      permission,
+    });
   }) as PermissionGuard;
   Object.defineProperty(guard, 'permission', { value: permission, enumerable: true });
   return guard;

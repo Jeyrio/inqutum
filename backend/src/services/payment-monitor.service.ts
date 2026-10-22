@@ -275,9 +275,7 @@ export class PaymentMonitorService {
     await this.invoices.markAsPaid(
       invoice.id,
       payment.txHash,
-      payment.from,
-      undefined,
-      { settledAt }
+      payment.from
     );
   }
 

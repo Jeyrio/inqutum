@@ -20,6 +20,8 @@ import {
 import { sanitizePlainText } from '../security/content-safety';
 import { amountsMatch as stroopAmountsMatch } from '../utils/verify-amount-tolerance';
 import { isFeatureEnabled } from '../config/feature-flags';
+import { parseSettlementTime } from '../domain/invoice-settlement';
+import { horizonMemo, memosMatch, type MemoType } from '../utils/memo-compare';
 
 export const VERIFICATION_CONTRACT_VERSION = '1.0.0';
 
@@ -149,6 +151,8 @@ export interface ExpectedPayment {
 export interface HorizonTransactionLike {
   memo?: string | null;
   memo_type?: string | null;
+  /** Ledger close time; the settlement time recorded for a late payment. */
+  created_at?: string | null;
   envelope_type?: string | null;
   inner_transaction?: HorizonTransactionLike | null;
 }
@@ -310,29 +314,20 @@ export function verifyHorizonPayment(input: VerifyPaymentInput): VerificationRes
     return failure('ASSET_MISMATCH');
   }
 
+  // Horizon operations are snake_case (`asset_type`), like the matching above.
   const paymentOp = assetMatch;
-  const paidAsset = resolvePaymentAsset({
-    assetType: paymentOp.assetType,
-    assetCode: paymentOp.assetCode,
-    assetIssuer: paymentOp.assetIssuer,
-  });
-
-  if (!assetsMatch(invoiceAsset, paidAsset)) {
-    return failure('ASSET_MISMATCH');
-  }
-
-  const paidAssetCode = paymentOp.assetType === 'native' ? 'XLM' : paymentOp.assetCode ?? '';
+  const paidAssetCode = paymentOp.asset_type === 'native' ? 'XLM' : paymentOp.asset_code ?? '';
   const settledAt = transactionSettlementTime(transaction);
 
   return {
     ok: true,
     value: {
       txHash: hashCheck.value,
-      from: paymentOp.from,
-      to: paymentOp.to,
-      amount: paymentOp.amount,
+      from: paymentOp.from ?? '',
+      to: paymentOp.to ?? '',
+      amount: paymentOp.amount ?? '',
       assetCode: paidAssetCode,
-      assetIssuer: paymentOp.assetType === 'native' ? undefined : paymentOp.assetIssuer,
+      assetIssuer: paymentOp.asset_type === 'native' ? undefined : paymentOp.asset_issuer,
       memo: transaction?.memo ?? '',
       ...(settledAt ? { settledAt } : {}),
     },

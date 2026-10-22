@@ -59,16 +59,15 @@ const isExpiredInvoice = (statusOrInvoice, now) =>
  * - Fails closed on non-object invoices, non-string status, or non-finite `now`.
  */
 const shouldShowPaymentControls = (statusOrInvoice, paymentTxHash, now) => {
+  // Invoice objects only (#338): a bare status string fails closed.
   if (!statusOrInvoice || typeof statusOrInvoice !== 'object') {
     return false;
   }
   const invoice = asInvoice(statusOrInvoice);
-  if (!invoice || typeof invoice !== 'object') {
-    return false;
-  }
 
-  // Reject non-finite timestamps — a NaN `now` would make expiry comparisons meaningless.
-  if (now !== undefined && now !== null && !Number.isFinite(now)) {
+  // Reject unparseable timestamps (a number, Date or ISO string is fine): a NaN
+  // `now` would make expiry comparisons meaningless.
+  if (now !== undefined && now !== null && !Number.isFinite(new Date(now).getTime())) {
     return false;
   }
 
@@ -95,6 +94,7 @@ function getPayPageView(invoice, now) {
   if (!invoice) {
     return {
       expired: false,
+      cancelled: false,
       paid: false,
       showPaymentControls: false,
       showProof: false,
@@ -109,6 +109,7 @@ function getPayPageView(invoice, now) {
 
   return {
     expired: isExpired,
+    cancelled: effective === 'CANCELLED',
     paid: isPaid,
     showPaymentControls: shouldShowPaymentControls(invoice, invoice.paymentTxHash, now),
     showProof: isPaid && hasTxHash,

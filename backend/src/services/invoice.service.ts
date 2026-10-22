@@ -6,6 +6,15 @@ import type { InvoiceStats } from '../storage/invoice-stats';
 import { calculateInvoiceExpiry } from '../domain/invoice-expiry';
 import type { InvoiceCursor } from '../storage/invoice-cursor';
 import { ConflictError } from '../concurrency/optimistic-lock';
+import type { AuditEvent, InvoiceStatus } from '../storage/invoice-storage';
+import type {
+  LatePaymentWarningCode,
+  SettlementContext,
+} from '../domain/invoice-settlement';
+import { SettlementTimeUnavailableError } from '../domain/invoice-settlement';
+import { PaymentClaimError } from '../domain/payment-attribution';
+import { InvalidTransitionError } from '../../../shared/invoice-lifecycle';
+import type { ReconciliationInvoice, ReconciliationSettlement } from '../domain/reconciliation';
 
 // PostgreSQL invoice service. Kept behaviourally identical to
 // InvoiceMemoryService so callers that go through the shared InvoiceStorage
@@ -326,7 +335,7 @@ export class InvoiceService {
     if (expectedVersion !== undefined) {
       query = `
         UPDATE invoices
-        SET status = 'CANCELLED', version = version + 1
+        SET status = 'CANCELLED', cancelled_at = NOW(), version = version + 1
         WHERE id = $1 AND status = 'PENDING' AND version = $2
         RETURNING *
       `;
@@ -334,7 +343,7 @@ export class InvoiceService {
     } else {
       query = `
         UPDATE invoices
-        SET status = 'CANCELLED', version = version + 1
+        SET status = 'CANCELLED', cancelled_at = NOW(), version = version + 1
         WHERE id = $1 AND status = 'PENDING'
         RETURNING *
       `;
@@ -356,7 +365,7 @@ export class InvoiceService {
     await this.recordLifecycleEvent(invoiceId, 'INVOICE_CANCELLED', {
       from: 'PENDING',
       to: 'CANCELLED',
-      actor: sellerPublicKey,
+      actor: result.rows[0].seller_public_key,
     });
     return this.mapRowToInvoice(result.rows[0]);
   }

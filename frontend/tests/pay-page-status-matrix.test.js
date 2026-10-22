@@ -48,7 +48,7 @@ test('an unknown or missing status is not treated as expired', () => {
 });
 
 test('payment controls are offered for exactly one status', () => {
-  const offered = ALL_STATUSES.filter((status) => shouldShowPaymentControls(status));
+  const offered = ALL_STATUSES.filter((status) => shouldShowPaymentControls({ status }));
 
   assert.deepEqual(
     offered,
@@ -60,7 +60,7 @@ test('payment controls are offered for exactly one status', () => {
 test('a recorded transaction hash withdraws the controls on every status', () => {
   for (const status of ALL_STATUSES) {
     assert.equal(
-      shouldShowPaymentControls(status, 'b3a1f0c9'),
+      shouldShowPaymentControls({ status }, 'b3a1f0c9'),
       false,
       `${status} still offered payment despite an existing transaction`
     );
@@ -69,14 +69,14 @@ test('a recorded transaction hash withdraws the controls on every status', () =>
 
 test('an empty transaction hash does not count as already paid', () => {
   // A falsy hash is "no payment recorded yet", not "payment in progress".
-  assert.equal(shouldShowPaymentControls('PENDING', ''), true);
-  assert.equal(shouldShowPaymentControls('PENDING', undefined), true);
-  assert.equal(shouldShowPaymentControls('PENDING', null), true);
+  assert.equal(shouldShowPaymentControls({ status: 'PENDING' }, ''), true);
+  assert.equal(shouldShowPaymentControls({ status: 'PENDING' }, undefined), true);
+  assert.equal(shouldShowPaymentControls({ status: 'PENDING' }, null), true);
 });
 
 test('an unknown status never offers payment controls', () => {
   // Statuses added on the backend must fail closed, not open.
-  assert.equal(shouldShowPaymentControls('SOMETHING_NEW'), false);
+  assert.equal(shouldShowPaymentControls({ status: 'SOMETHING_NEW' }), false);
   assert.equal(shouldShowPaymentControls(undefined), false);
 });
 

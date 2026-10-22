@@ -2,9 +2,20 @@ import { v4 as uuidv4 } from 'uuid';
 import { calculateInvoiceStats } from './invoice-stats';
 import type { InvoiceStats } from './invoice-stats';
 import { isPendingInvoiceExpired } from '../domain/invoice-expiry';
-import type { StoredInvoice } from './invoice-storage';
+import type { AuditEvent, InvoiceStatus, StoredInvoice } from './invoice-storage';
 import { checkVersion } from '../concurrency/optimistic-lock';
 import { MemoCollisionError, PaymentClaimIndex } from '../domain/payment-attribution';
+import type { PaymentClaim } from '../domain/payment-attribution';
+import { InvalidTransitionError, assertTransition } from '../../../shared/invoice-lifecycle';
+import type { InvoiceEvent } from '../../../shared/invoice-lifecycle';
+
+export interface MemoryPaymentEvent {
+  id: string;
+  invoiceId: string;
+  eventType: string;
+  eventData: any;
+  createdAt: Date;
+}
 
 type Invoice = StoredInvoice;
 

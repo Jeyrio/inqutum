@@ -32,7 +32,8 @@
     "release:gate": "tsx ../scripts/release-readiness-gate.ts",
     "release:check": "tsx ../scripts/release-readiness-gate.ts --check",
     "test:load:cardinality": "tsx ../scripts/load-cardinality-burst.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:security": "tsx -e \"import { assertSafeEnvironment } from './src/config/runtime.ts'; import assert from 'node:assert'; assert.throws(() => assertSafeEnvironment({ NODE_ENV: 'production', ALLOW_SIMULATE: 'true' })); assert.throws(() => assertSafeEnvironment({ DEMO_MODE: 'true', ALLOW_SIMULATE: 'true' })); console.log('✓ Security simulation lockout verified');\""
   },
   "engines": {
     "node": ">=18"

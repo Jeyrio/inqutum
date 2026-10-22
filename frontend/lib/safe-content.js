@@ -50,8 +50,12 @@ function safeExternalUrl(value) {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:' || url.username || url.password || !url.hostname) return null;
-    // Reject URLs with only a TLD and no meaningful host (e.g. "https://.com")
-    if (url.hostname.length < 3 || !url.hostname.includes('.')) return null;
+    // A public host needs at least two non-empty labels ("https://.com" and
+    // "https://a." do not), and local-only names never leave the machine.
+    const labels = url.hostname.split('.');
+    if (labels.length < 2 || labels.some((label) => label.length === 0)) return null;
+    const tld = labels[labels.length - 1].toLowerCase();
+    if (tld === 'local' || tld === 'localhost') return null;
     return url.toString();
   } catch {
     return null;

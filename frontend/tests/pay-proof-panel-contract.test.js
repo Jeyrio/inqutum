@@ -103,7 +103,7 @@ test('pay proof panel contract - button disable state', () => {
   assert.ok(!statesPending.email);
 });
 
-test('pay proof panel contract - degraded email delivery', () => {
+test('pay proof panel contract - degraded email delivery', async () => {
   const emailAttempt = async (invoice) => {
     try {
       if (!invoice.customerEmail) {
@@ -124,12 +124,13 @@ test('pay proof panel contract - degraded email delivery', () => {
     { invoice: { status: 'PAID', customerEmail: 'test@example.com' }, shouldFail: false },
   ];
 
-  testCases.forEach(({ invoice, shouldFail }) => {
-    const result = emailAttempt(invoice);
+  // emailAttempt is async: await each result instead of asserting on a Promise.
+  for (const { invoice, shouldFail } of testCases) {
+    const result = await emailAttempt(invoice);
     if (shouldFail) {
       assert.ok(!result.success || result.error, 'should handle missing email or unpaid status');
     } else {
       assert.ok(result.success, 'should succeed with paid invoice and customer email');
     }
-  });
+  }
 });

@@ -9,7 +9,14 @@ import {
   getNetwork,
   getNetworkDetails,
 } from '@stellar/freighter-api';
-import { detectFreighter } from './freighter-availability';
+import {
+  FREIGHTER_CONNECT_REQUIRED_MESSAGE,
+  FREIGHTER_REQUIRED_MESSAGE,
+  detectFreighter,
+  networkMatches,
+  wrongNetworkMessage,
+} from './freighter-availability';
+import { networkDisplayName } from './network-display-name';
 import { explorerTransactionUrl } from './safe-content.js';
 
 // Network configuration
@@ -63,17 +70,33 @@ const isMissingTrustlineError = (error: any): boolean => {
   );
 };
 
-export const describeStellarNetworkError = (error: any): string => {
-  if (error?.message?.includes('Not Found') || error?.response?.status === 404) {
-    return 'Account needs funding on the selected Stellar network.';
-  }
-  if (!error?.response || ['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT'].includes(error?.code)) {
-    return 'Stellar Horizon is temporarily unreachable. Your wallet can stay connected; retry shortly.';
-  }
-  return error?.message || 'Stellar network request failed.';
-};
+import { describeStellarNetworkError } from './stellar-network-error';
+export { describeStellarNetworkError };
 
 import { freighterAdapter } from './freighter-adapter';
+
+// Freighter API results changed shape across versions (boolean vs { isAllowed },
+// string vs { address }). These read either. Restored from before #328.
+const readResultBoolean = (value: any, key: string): boolean => {
+  if (typeof value === 'boolean') return value;
+  if (value?.error) return false;
+  if (typeof value?.[key] === 'boolean') return value[key];
+  return Boolean(value);
+};
+
+export interface FreighterNetwork {
+  network: string | null;
+  networkPassphrase: string | null;
+  networkUrl?: string;
+}
+
+export interface FreighterSession {
+  freighterAvailable: boolean;
+  connected: boolean;
+  publicKey: string | null;
+  network: string | null;
+  networkPassphrase: string | null;
+}
 
 /**
  * Check whether the Freighter extension API is available
@@ -417,10 +440,10 @@ export const sendPayment = async (
       .build();
 
     // Sign with Freighter via compatibility adapter (Issue #24)
+    // The adapter normalizes every Freighter response shape to the XDR string.
     const signedTxXdr = await freighterAdapter.signTransaction(transaction.toXDR(), {
       networkPassphrase: NETWORK_PASSPHRASE,
     });
-    const signedTxXdr = readResultString(signedResult, ['signedTxXdr']);
     if (!signedTxXdr) {
       throw new Error('Freighter did not return a signed transaction');
     }

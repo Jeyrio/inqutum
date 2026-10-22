@@ -76,13 +76,22 @@ export interface ApiFailure {
   recoveryAction?: string;
   correlationId?: string;
   timestamp?: string;
+  /** Structured, non-sensitive context for the failure (e.g. `{ from, to }`). */
+  details?: Record<string, unknown>;
 }
 
 export type ApiResponse<T> = ApiSuccess<T> | ApiFailure;
 
 export function apiSuccess<T>(
   data: T,
-  extra?: { message?: string; pagination?: ApiPagination; correlationId?: string; apiVersion?: string }
+  extra?: {
+    message?: string;
+    code?: string;
+    warning?: string;
+    pagination?: ApiPagination;
+    correlationId?: string;
+    apiVersion?: string;
+  }
 ): ApiSuccess<T> {
   const body: ApiSuccess<T> = { success: true, data };
 
@@ -143,18 +152,28 @@ export function sendSuccess<T>(
   res.status(status).json(apiSuccess(data, { ...extra, correlationId: corrId }));
 }
 
+export interface FailureOptions {
+  code?: string;
+  category?: ErrorCategory;
+  retryable?: boolean;
+  recoveryAction?: string;
+  correlationId?: string;
+}
+
+/**
+ * Sends a failure envelope. The fourth argument is either the options object
+ * or, as most routes were written, the bare error code; `details` is attached
+ * as `body.details` either way.
+ */
 export function sendFailure(
   res: Response,
   status: number,
   error: string | any,
-  extra?: {
-    code?: string;
-    category?: ErrorCategory;
-    retryable?: boolean;
-    recoveryAction?: string;
-    correlationId?: string;
-  }
+  codeOrOptions?: string | FailureOptions,
+  details?: Record<string, unknown>
 ): void {
+  const extra: FailureOptions | undefined =
+    typeof codeOrOptions === 'string' ? { code: codeOrOptions } : codeOrOptions;
   const corrId = extra?.correlationId || (res.req as any)?.correlationId;
 
   if (typeof error === 'object' && error !== null) {
@@ -177,7 +196,9 @@ export function sendFailure(
     return;
   }
 
-  res.status(status).json(apiFailure(error, { ...extra, correlationId: corrId }));
+  const body = apiFailure(error, { ...extra, correlationId: corrId });
+  if (details) body.details = details;
+  res.status(status).json(body);
 }
 
 export function sendVerificationFailure(

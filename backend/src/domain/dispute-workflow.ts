@@ -24,11 +24,11 @@ export type DisputeState = (typeof DISPUTE_STATES)[number];
 export type DisputeAction = 'investigate' | 'resolve' | 'reject' | 'reopen';
 
 export const DISPUTE_TRANSITIONS: Readonly<Record<DisputeState, readonly DisputeState[]>> = Object.freeze({
-  OPEN: Object.freeze(['INVESTIGATING', 'REJECTED']),
-  INVESTIGATING: Object.freeze(['RESOLVED', 'REJECTED']),
-  RESOLVED: Object.freeze(['REOPENED']),
-  REJECTED: Object.freeze(['REOPENED']),
-  REOPENED: Object.freeze(['INVESTIGATING', 'REJECTED']),
+  OPEN: Object.freeze(['INVESTIGATING', 'REJECTED'] as const),
+  INVESTIGATING: Object.freeze(['RESOLVED', 'REJECTED'] as const),
+  RESOLVED: Object.freeze(['REOPENED'] as const),
+  REJECTED: Object.freeze(['REOPENED'] as const),
+  REOPENED: Object.freeze(['INVESTIGATING', 'REJECTED'] as const),
 });
 
 const ACTION_TARGET: Record<DisputeAction, DisputeState> = {

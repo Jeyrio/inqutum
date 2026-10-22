@@ -65,8 +65,9 @@ export declare const TERMINAL_STATES: readonly PayStatus[];
 
 export function isExpiredInvoice(statusOrInvoice: string | PayInvoice, now?: string | number | Date): boolean;
 
+/** Invoice objects only; a bare status string fails closed (#338). */
 export function shouldShowPaymentControls(
-  statusOrInvoice: string | PayInvoice,
+  invoice: PayInvoice | null | undefined,
   paymentTxHash?: string | null,
   now?: string | number | Date
 ): boolean;
